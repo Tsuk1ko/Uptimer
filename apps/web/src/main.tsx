@@ -3,6 +3,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { RouterProvider } from 'react-router-dom';
 
+import { AuthProvider } from './app/AuthContext';
 import { queryClient } from './app/queryClient';
 import { router } from './app/router';
 import './styles.css';
@@ -13,7 +14,9 @@ if (!rootEl) throw new Error('Missing #root element');
 ReactDOM.createRoot(rootEl).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <AuthProvider>
+        <RouterProvider router={router} />
+      </AuthProvider>
     </QueryClientProvider>
   </React.StrictMode>,
 );

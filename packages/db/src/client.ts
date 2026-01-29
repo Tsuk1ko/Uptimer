@@ -1,4 +1,5 @@
 import { drizzle } from 'drizzle-orm/d1';
+export { eq, and, or, desc, asc, sql } from 'drizzle-orm';
 
 import * as schema from './schema';
 

@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 
 import {
+  eq,
   expectedStatusJsonSchema,
   getDb,
   httpHeadersJsonSchema,
@@ -16,8 +17,11 @@ import {
 import type { Env } from '../env';
 import { requireAdmin } from '../middleware/auth';
 import { AppError } from '../middleware/errors';
+import { runHttpCheck } from '../monitor/http';
+import { validateHttpTarget, validateTcpTarget } from '../monitor/targets';
+import { runTcpCheck } from '../monitor/tcp';
 import { dispatchWebhookToChannel } from '../notify/webhook';
-import { createMonitorInputSchema } from '../schemas/monitors';
+import { createMonitorInputSchema, patchMonitorInputSchema } from '../schemas/monitors';
 import {
   createNotificationChannelInputSchema,
   patchNotificationChannelInputSchema,
@@ -101,6 +105,147 @@ adminRoutes.post('/monitors', async (c) => {
     .get();
 
   return c.json({ monitor: monitorRowToApi(inserted) }, 201);
+});
+
+adminRoutes.patch('/monitors/:id', async (c) => {
+  const id = z.coerce.number().int().positive().parse(c.req.param('id'));
+
+  const rawBody = await c.req.json().catch(() => {
+    throw new AppError(400, 'INVALID_ARGUMENT', 'Invalid JSON body');
+  });
+  const input = patchMonitorInputSchema.parse(rawBody);
+
+  const db = getDb(c.env);
+  const existing = await db.select().from(monitors).where(eq(monitors.id, id)).get();
+
+  if (!existing) {
+    throw new AppError(404, 'NOT_FOUND', 'Monitor not found');
+  }
+
+  // Validate target if being updated
+  if (input.target !== undefined) {
+    const targetErr =
+      existing.type === 'http' ? validateHttpTarget(input.target) : validateTcpTarget(input.target);
+    if (targetErr) {
+      throw new AppError(400, 'INVALID_ARGUMENT', targetErr);
+    }
+  }
+
+  // Prevent http_* fields on tcp monitors
+  if (existing.type === 'tcp') {
+    const httpFields = [
+      'http_method',
+      'http_headers_json',
+      'http_body',
+      'expected_status_json',
+      'response_keyword',
+      'response_forbidden_keyword',
+    ] as const;
+    for (const field of httpFields) {
+      if (input[field] !== undefined) {
+        throw new AppError(400, 'INVALID_ARGUMENT', 'http_* fields are not allowed for tcp monitors');
+      }
+    }
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+
+  const updated = await db
+    .update(monitors)
+    .set({
+      name: input.name ?? existing.name,
+      target: input.target ?? existing.target,
+      intervalSec: input.interval_sec ?? existing.intervalSec,
+      timeoutMs: input.timeout_ms ?? existing.timeoutMs,
+      httpMethod: input.http_method !== undefined ? input.http_method : existing.httpMethod,
+      httpHeadersJson:
+        input.http_headers_json !== undefined
+          ? serializeDbJsonNullable(httpHeadersJsonSchema, input.http_headers_json, {
+              field: 'http_headers_json',
+            })
+          : existing.httpHeadersJson,
+      httpBody: input.http_body !== undefined ? input.http_body : existing.httpBody,
+      expectedStatusJson:
+        input.expected_status_json !== undefined
+          ? serializeDbJsonNullable(expectedStatusJsonSchema, input.expected_status_json, {
+              field: 'expected_status_json',
+            })
+          : existing.expectedStatusJson,
+      responseKeyword: input.response_keyword !== undefined ? input.response_keyword : existing.responseKeyword,
+      responseForbiddenKeyword:
+        input.response_forbidden_keyword !== undefined
+          ? input.response_forbidden_keyword
+          : existing.responseForbiddenKeyword,
+      isActive: input.is_active ?? existing.isActive,
+      updatedAt: now,
+    })
+    .where(eq(monitors.id, id))
+    .returning()
+    .get();
+
+  if (!updated) {
+    throw new AppError(500, 'INTERNAL', 'Failed to update monitor');
+  }
+
+  return c.json({ monitor: monitorRowToApi(updated) });
+});
+
+adminRoutes.delete('/monitors/:id', async (c) => {
+  const id = z.coerce.number().int().positive().parse(c.req.param('id'));
+
+  const db = getDb(c.env);
+  const existing = await db.select().from(monitors).where(eq(monitors.id, id)).get();
+
+  if (!existing) {
+    throw new AppError(404, 'NOT_FOUND', 'Monitor not found');
+  }
+
+  await db.delete(monitors).where(eq(monitors.id, id)).run();
+
+  return c.json({ deleted: true });
+});
+
+adminRoutes.post('/monitors/:id/test', async (c) => {
+  const id = z.coerce.number().int().positive().parse(c.req.param('id'));
+
+  const db = getDb(c.env);
+  const monitor = await db.select().from(monitors).where(eq(monitors.id, id)).get();
+
+  if (!monitor) {
+    throw new AppError(404, 'NOT_FOUND', 'Monitor not found');
+  }
+
+  let outcome;
+  if (monitor.type === 'http') {
+    outcome = await runHttpCheck({
+      url: monitor.target,
+      timeoutMs: monitor.timeoutMs,
+      method: (monitor.httpMethod as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD') ?? 'GET',
+      headers: parseDbJsonNullable(httpHeadersJsonSchema, monitor.httpHeadersJson, { field: 'http_headers_json' }),
+      body: monitor.httpBody,
+      expectedStatus: parseDbJsonNullable(expectedStatusJsonSchema, monitor.expectedStatusJson, {
+        field: 'expected_status_json',
+      }),
+      responseKeyword: monitor.responseKeyword,
+      responseForbiddenKeyword: monitor.responseForbiddenKeyword,
+    });
+  } else {
+    outcome = await runTcpCheck({
+      target: monitor.target,
+      timeoutMs: monitor.timeoutMs,
+    });
+  }
+
+  return c.json({
+    monitor: { id: monitor.id, name: monitor.name, type: monitor.type },
+    result: {
+      status: outcome.status,
+      latency_ms: outcome.latencyMs,
+      http_status: outcome.httpStatus,
+      error: outcome.error,
+      attempts: outcome.attempts,
+    },
+  });
 });
 
 type NotificationChannelRow = {
