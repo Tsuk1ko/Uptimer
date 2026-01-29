@@ -18,7 +18,7 @@ app.route('/api/v1/admin', adminRoutes);
 
 export default {
   fetch: app.fetch,
-  scheduled: async (_controller: ScheduledController, env: Env, _ctx: ExecutionContext) => {
-    await runScheduledTick(env);
+  scheduled: async (_controller: ScheduledController, env: Env, ctx: ExecutionContext) => {
+    await runScheduledTick(env, ctx);
   },
 };

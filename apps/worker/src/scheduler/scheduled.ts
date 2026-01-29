@@ -3,7 +3,9 @@ import pLimit from 'p-limit';
 import {
   expectedStatusJsonSchema,
   httpHeadersJsonSchema,
+  parseDbJson,
   parseDbJsonNullable,
+  webhookChannelConfigSchema,
   type MonitorStatus,
 } from '@uptimer/db';
 
@@ -12,6 +14,7 @@ import { runHttpCheck } from '../monitor/http';
 import { computeNextState, type MonitorStateSnapshot } from '../monitor/state-machine';
 import { runTcpCheck } from '../monitor/tcp';
 import type { CheckOutcome } from '../monitor/types';
+import { dispatchWebhookToChannels, type WebhookChannel } from '../notify/webhook';
 import { acquireLease } from './lock';
 
 const LOCK_NAME = 'scheduler:tick';
@@ -38,6 +41,53 @@ type DueMonitorRow = {
   consecutive_failures: number | null;
   consecutive_successes: number | null;
 };
+
+type ActiveWebhookChannelRow = {
+  id: number;
+  name: string;
+  config_json: string;
+};
+
+type NotifyContext = {
+  ctx: ExecutionContext;
+  envRecord: Record<string, unknown>;
+  channels: WebhookChannel[];
+};
+
+async function listActiveWebhookChannels(db: D1Database): Promise<WebhookChannel[]> {
+  const { results } = await db
+    .prepare(
+      `
+      SELECT id, name, config_json
+      FROM notification_channels
+      WHERE is_active = 1 AND type = 'webhook'
+      ORDER BY id
+    `
+    )
+    .all<ActiveWebhookChannelRow>();
+
+  return (results ?? []).map((r) => ({
+    id: r.id,
+    name: r.name,
+    config: parseDbJson(webhookChannelConfigSchema, r.config_json, { field: 'config_json' }),
+  }));
+}
+
+async function isMaintenanceSuppressed(db: D1Database, at: number): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `
+      SELECT 1 AS one
+      FROM maintenance_windows
+      WHERE starts_at <= ?1 AND ends_at > ?1
+      LIMIT 1
+    `
+    )
+    .bind(at)
+    .first<{ one: number }>();
+
+  return !!row;
+}
 
 function toHttpMethod(
   value: string | null
@@ -229,7 +279,12 @@ async function persistCheckAndState(
   await env.DB.batch(statements);
 }
 
-async function runDueMonitor(env: Env, row: DueMonitorRow, checkedAt: number): Promise<void> {
+async function runDueMonitor(
+  env: Env,
+  row: DueMonitorRow,
+  checkedAt: number,
+  notify: NotifyContext | null
+): Promise<void> {
   const prevStatus = toMonitorStatus(row.state_status);
   const prev: MonitorStateSnapshot | null =
     prevStatus === null
@@ -311,9 +366,60 @@ async function runDueMonitor(env: Env, row: DueMonitorRow, checkedAt: number): P
     outageAction,
     stateLastError
   );
+
+  if (!notify || !next.changed) {
+    return;
+  }
+
+  const prevForEvent: MonitorStatus = prevStatus ?? 'unknown';
+  let eventType: 'monitor.down' | 'monitor.up' | null = null;
+
+  if ((prevForEvent === 'up' || prevForEvent === 'unknown') && next.status === 'down') {
+    eventType = 'monitor.down';
+  } else if (prevForEvent === 'down' && next.status === 'up') {
+    eventType = 'monitor.up';
+  }
+
+  if (!eventType) {
+    return;
+  }
+
+  const eventSuffix = eventType === 'monitor.down' ? 'down' : 'up';
+  const eventKey = `monitor:${row.id}:${eventSuffix}:${checkedAt}`;
+
+  const payload = {
+    event: eventType,
+    event_id: eventKey,
+    timestamp: checkedAt,
+    monitor: {
+      id: row.id,
+      name: row.name,
+      type: row.type,
+      target: row.target,
+    },
+    state: {
+      status: next.status,
+      latency_ms: outcome.latencyMs,
+      http_status: outcome.httpStatus,
+      error: outcome.error,
+      location: null,
+    },
+  };
+
+  notify.ctx.waitUntil(
+    dispatchWebhookToChannels({
+      db: env.DB,
+      env: notify.envRecord,
+      channels: notify.channels,
+      eventKey,
+      payload,
+    }).catch((err) => {
+      console.error('notify: failed to dispatch webhooks', err);
+    })
+  );
 }
 
-export async function runScheduledTick(env: Env): Promise<void> {
+export async function runScheduledTick(env: Env, ctx: ExecutionContext): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
   const checkedAt = Math.floor(now / 60) * 60;
 
@@ -327,8 +433,16 @@ export async function runScheduledTick(env: Env): Promise<void> {
     return;
   }
 
+  // Maintenance windows are defined in unix seconds; suppress notifications based on current time.
+  const maintenanceSuppressed = await isMaintenanceSuppressed(env.DB, now);
+  const channels = maintenanceSuppressed ? [] : await listActiveWebhookChannels(env.DB);
+  const notify: NotifyContext | null =
+    maintenanceSuppressed || channels.length === 0
+      ? null
+      : { ctx, envRecord: env as unknown as Record<string, unknown>, channels };
+
   const limit = pLimit(CHECK_CONCURRENCY);
-  const settled = await Promise.allSettled(due.map((m) => limit(() => runDueMonitor(env, m, checkedAt))));
+  const settled = await Promise.allSettled(due.map((m) => limit(() => runDueMonitor(env, m, checkedAt, notify))));
 
   const rejected = settled.filter((r) => r.status === 'rejected');
   if (rejected.length > 0) {

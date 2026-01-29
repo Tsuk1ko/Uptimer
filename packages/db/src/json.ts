@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 export function parseDbJson<T>(
-  schema: z.ZodType<T>,
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
   value: string,
   opts: { field?: string } = {}
 ): T {
@@ -22,7 +22,7 @@ export function parseDbJson<T>(
 }
 
 export function parseDbJsonNullable<T>(
-  schema: z.ZodType<T>,
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
   value: string | null,
   opts: { field?: string } = {}
 ): T | null {
@@ -31,7 +31,7 @@ export function parseDbJsonNullable<T>(
 }
 
 export function serializeDbJson<T>(
-  schema: z.ZodType<T>,
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
   value: T,
   opts: { field?: string } = {}
 ): string {
@@ -44,7 +44,7 @@ export function serializeDbJson<T>(
 }
 
 export function serializeDbJsonNullable<T>(
-  schema: z.ZodType<T>,
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
   value: T | null,
   opts: { field?: string } = {}
 ): string | null {
@@ -63,13 +63,24 @@ export const webhookSigningSchema = z.object({
   secret_ref: z.string().min(1),
 });
 
+const webhookUrlSchema = z
+  .string()
+  .url()
+  .refine((val) => {
+    try {
+      const url = new URL(val);
+      return url.protocol === 'http:' || url.protocol === 'https:';
+    } catch {
+      return false;
+    }
+  }, 'url protocol must be http or https');
+
 export const webhookChannelConfigSchema = z.object({
-  url: z.string().url(),
+  url: webhookUrlSchema,
   method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).default('POST'),
   headers: z.record(z.string()).optional(),
-  timeout_ms: z.number().int().min(1).optional(),
+  timeout_ms: z.number().int().min(1).max(60000).optional(),
   payload_type: z.enum(['json']).default('json'),
   signing: webhookSigningSchema.optional(),
 });
 export type WebhookChannelConfig = z.infer<typeof webhookChannelConfigSchema>;
-
