@@ -7,12 +7,13 @@ interface MonitorFormProps {
   onSubmit: (data: CreateMonitorInput) => void;
   onCancel: () => void;
   isLoading?: boolean;
+  error?: string | undefined;
 }
 
 const inputClass = 'w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:border-slate-400 focus:ring-1 focus:ring-slate-400 transition-colors';
 const labelClass = 'block text-sm font-medium text-slate-700 mb-1.5';
 
-export function MonitorForm({ monitor, onSubmit, onCancel, isLoading }: MonitorFormProps) {
+export function MonitorForm({ monitor, onSubmit, onCancel, isLoading, error }: MonitorFormProps) {
   const [name, setName] = useState(monitor?.name ?? '');
   const [type, setType] = useState<MonitorType>(monitor?.type ?? 'http');
   const [target, setTarget] = useState(monitor?.target ?? '');
@@ -29,6 +30,11 @@ export function MonitorForm({ monitor, onSubmit, onCancel, isLoading }: MonitorF
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
+      {error && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+          {error}
+        </div>
+      )}
       <div>
         <label className={labelClass}>Name</label>
         <input type="text" value={name} onChange={(e) => setName(e.target.value)} className={inputClass} required />

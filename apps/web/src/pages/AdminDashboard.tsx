@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 
 import { useAuth } from '../app/AuthContext';
 import {
+  ApiError,
   fetchAdminMonitors, createMonitor, updateMonitor, deleteMonitor, testMonitor,
   fetchNotificationChannels, createNotificationChannel, updateNotificationChannel, testNotificationChannel,
   fetchAdminIncidents, createIncident, addIncidentUpdate, resolveIncident, deleteIncident,
@@ -37,6 +38,13 @@ const tabs: { key: Tab; label: string; icon: string }[] = [
   { key: 'incidents', label: 'Incidents', icon: 'M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z' },
   { key: 'maintenance', label: 'Maintenance', icon: 'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z' },
 ];
+
+function formatError(err: unknown): string | undefined {
+  if (!err) return undefined;
+  if (err instanceof ApiError) return `${err.code}: ${err.message}`;
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
 
 export function AdminDashboard() {
   const { logout } = useAuth();
@@ -107,10 +115,15 @@ export function AdminDashboard() {
           <div className="space-y-4">
             <div className="flex justify-between items-center">
               <h2 className="text-lg font-semibold text-slate-900">Monitors</h2>
-              <Button onClick={() => setModal({ type: 'create-monitor' })}>Add Monitor</Button>
+              <Button onClick={() => { createMonitorMut.reset(); updateMonitorMut.reset(); setModal({ type: 'create-monitor' }); }}>Add Monitor</Button>
             </div>
             {monitorsQuery.isLoading ? (
               <div className="text-slate-500">Loading...</div>
+            ) : monitorsQuery.isError ? (
+              <Card className="p-8 text-center">
+                <div className="text-red-600 font-medium mb-2">Failed to load monitors</div>
+                <div className="text-sm text-slate-500">{formatError(monitorsQuery.error) ?? 'Unknown error'}</div>
+              </Card>
             ) : !monitorsQuery.data?.monitors.length ? (
               <Card className="p-8 text-center text-slate-500">No monitors yet</Card>
             ) : (
@@ -134,7 +147,7 @@ export function AdminDashboard() {
                         <td className="px-4 py-3"><Badge variant={m.is_active ? 'up' : 'unknown'}>{m.is_active ? 'Active' : 'Paused'}</Badge></td>
                         <td className="px-4 py-3 text-right space-x-2">
                           <button onClick={() => { setTestingMonitorId(m.id); testMonitorMut.mutate(m.id); }} disabled={testingMonitorId === m.id} className="text-sm text-blue-600 hover:text-blue-800 disabled:opacity-50">{testingMonitorId === m.id ? 'Testing...' : 'Test'}</button>
-                          <button onClick={() => setModal({ type: 'edit-monitor', monitor: m })} className="text-sm text-slate-600 hover:text-slate-900">Edit</button>
+                          <button onClick={() => { createMonitorMut.reset(); updateMonitorMut.reset(); setModal({ type: 'edit-monitor', monitor: m }); }} className="text-sm text-slate-600 hover:text-slate-900">Edit</button>
                           <button onClick={() => confirm('Delete?') && deleteMonitorMut.mutate(m.id)} className="text-sm text-red-500 hover:text-red-700">Delete</button>
                         </td>
                       </tr>
@@ -292,7 +305,17 @@ export function AdminDashboard() {
             </h2>
 
             {(modal.type === 'create-monitor' || modal.type === 'edit-monitor') && (
-              <MonitorForm monitor={modal.type === 'edit-monitor' ? modal.monitor : undefined} onSubmit={(data) => modal.type === 'edit-monitor' ? updateMonitorMut.mutate({ id: modal.monitor.id, data }) : createMonitorMut.mutate(data)} onCancel={closeModal} isLoading={createMonitorMut.isPending || updateMonitorMut.isPending} />
+              <MonitorForm
+                monitor={modal.type === 'edit-monitor' ? modal.monitor : undefined}
+                onSubmit={(data) =>
+                  modal.type === 'edit-monitor'
+                    ? updateMonitorMut.mutate({ id: modal.monitor.id, data })
+                    : createMonitorMut.mutate(data)
+                }
+                onCancel={closeModal}
+                isLoading={createMonitorMut.isPending || updateMonitorMut.isPending}
+                error={modal.type === 'create-monitor' ? formatError(createMonitorMut.error) : formatError(updateMonitorMut.error)}
+              />
             )}
             {(modal.type === 'create-channel' || modal.type === 'edit-channel') && (
               <NotificationChannelForm channel={modal.type === 'edit-channel' ? modal.channel : undefined} onSubmit={(data) => modal.type === 'edit-channel' ? updateChannelMut.mutate({ id: modal.channel.id, data }) : createChannelMut.mutate(data)} onCancel={closeModal} isLoading={createChannelMut.isPending || updateChannelMut.isPending} />

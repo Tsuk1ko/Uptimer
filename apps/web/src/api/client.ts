@@ -50,12 +50,43 @@ function getAuthHeaders(): HeadersInit {
   return { Authorization: `Bearer ${token}` };
 }
 
-async function handleResponse<T>(res: Response): Promise<T> {
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: { code: 'UNKNOWN', message: 'Unknown error' } }));
-    throw new ApiError(body.error?.code ?? 'UNKNOWN', body.error?.message ?? 'Unknown error', res.status);
+function safeJsonParse(text: string): unknown | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return null;
   }
-  return res.json();
+}
+
+async function handleResponse<T>(res: Response): Promise<T> {
+  // Prefer reading the body as text once and parsing ourselves so we can handle "HTML instead of JSON"
+  // cases (common when API_BASE/proxy/routing is misconfigured).
+  const text = await res.text();
+  const body = safeJsonParse(text);
+
+  if (!res.ok) {
+    const err = (body as { error?: { code?: unknown; message?: unknown } } | null)?.error;
+    const code = typeof err?.code === 'string' ? err.code : 'UNKNOWN';
+    const message =
+      typeof err?.message === 'string'
+        ? err.message
+        : text.trim().startsWith('<')
+          ? 'API returned HTML instead of JSON. Check VITE_API_BASE / proxy / routing to the Worker.'
+          : `Request failed (HTTP ${res.status}).`;
+
+    throw new ApiError(code, message, res.status);
+  }
+
+  if (body === null) {
+    const hint = text.trim().startsWith('<')
+      ? 'API returned HTML instead of JSON. Check VITE_API_BASE / proxy / routing to the Worker.'
+      : 'API returned an invalid response (expected JSON).';
+    throw new ApiError('INVALID_RESPONSE', hint, res.status);
+  }
+
+  return body as T;
 }
 
 // Public API
