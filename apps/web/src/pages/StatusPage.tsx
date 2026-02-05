@@ -116,6 +116,30 @@ function getUptimeDotBgClasses(uptimePct: number, level: 1 | 2 | 3 | 4 | 5): str
   }
 }
 
+function getAvailabilityPillClasses(uptimePct: number, level: 1 | 2 | 3 | 4 | 5): string {
+  switch (getUptimeTier(uptimePct, level)) {
+    case 'emerald':
+      return 'bg-emerald-50 text-emerald-800 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-200 dark:border-emerald-800/60';
+    case 'green':
+      return 'bg-green-50 text-green-800 border-green-200 dark:bg-green-950/40 dark:text-green-200 dark:border-green-800/60';
+    case 'lime':
+      return 'bg-lime-50 text-lime-800 border-lime-200 dark:bg-lime-950/40 dark:text-lime-200 dark:border-lime-800/60';
+    case 'yellow':
+      return 'bg-yellow-50 text-yellow-900 border-yellow-200 dark:bg-yellow-950/40 dark:text-yellow-200 dark:border-yellow-800/60';
+    case 'amber':
+      return 'bg-amber-50 text-amber-900 border-amber-200 dark:bg-amber-950/40 dark:text-amber-200 dark:border-amber-800/60';
+    case 'orange':
+      return 'bg-orange-50 text-orange-900 border-orange-200 dark:bg-orange-950/40 dark:text-orange-200 dark:border-orange-800/60';
+    case 'red':
+      return 'bg-red-50 text-red-800 border-red-200 dark:bg-red-950/40 dark:text-red-200 dark:border-red-800/60';
+    case 'rose':
+      return 'bg-rose-50 text-rose-800 border-rose-200 dark:bg-rose-950/40 dark:text-rose-200 dark:border-rose-800/60';
+    case 'slate':
+    default:
+      return 'bg-slate-100/80 text-slate-700 border-slate-200 dark:bg-slate-700/50 dark:text-slate-200 dark:border-slate-600/60';
+  }
+}
+
 function MonitorCard({ monitor, onSelect, onDayClick, timeZone }: { monitor: PublicMonitor; onSelect: () => void; onDayClick: (dayStartAt: number) => void; timeZone: string }) {
   const uptime30d = monitor.uptime_30d;
 
@@ -140,7 +164,7 @@ function MonitorCard({ monitor, onSelect, onDayClick, timeZone }: { monitor: Pub
         <span className="uppercase tracking-wide">Availability (30d)</span>
         {uptime30d ? (
           <span
-            className="inline-flex items-center gap-1.5 rounded-md bg-slate-100/80 dark:bg-slate-700/50 px-2 py-0.5 text-[11px] font-medium tabular-nums text-slate-700 dark:text-slate-200"
+            className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium tabular-nums ${getAvailabilityPillClasses(uptime30d.uptime_pct, monitor.uptime_rating_level)}`}
             title="Average availability over the last 30 days"
           >
             <span
