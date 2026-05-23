@@ -957,9 +957,9 @@ async function buildHomepageMonitorCardsFromRows(
         const statement = db.prepare(
           `
       SELECT checked_at, latency_ms, status
-      FROM check_results
+      FROM check_results_v2_expanded
       WHERE monitor_id = ?1
-      ORDER BY checked_at DESC, id DESC
+      ORDER BY checked_at DESC
       LIMIT ?2
     `,
         );

@@ -159,11 +159,11 @@ describe('internal/monitor-fragments-refresh-core', () => {
       monitorCount: 1,
     });
     expect(writes.map((args) => [args[0], args[1]])).toEqual([
-      ['status:monitors', 'monitor:2'],
-      ['homepage:monitors', 'monitor:2'],
+      ['status:monitors', expect.stringMatching(/^batch:1700000000:[0-9a-z]+$/)],
+      ['homepage:monitors', expect.stringMatching(/^batch:1700000000:[0-9a-z]+$/)],
     ]);
-    expect(JSON.parse(writes[0]![3] as string).id).toBe(2);
-    expect(JSON.parse(writes[1]![3] as string).id).toBe(2);
+    expect(JSON.parse(writes[0]![3] as string)[0].id).toBe(2);
+    expect(JSON.parse(writes[1]![3] as string)[0].id).toBe(2);
   });
 
   it('writes all monitor fragments when no runtime updates bound the refresh', async () => {
@@ -187,11 +187,17 @@ describe('internal/monitor-fragments-refresh-core', () => {
 
     expect(result).toMatchObject({
       ok: true,
-      writeCount: 2,
+      writeCount: 1,
       statusWriteCount: 0,
-      homepageWriteCount: 2,
+      homepageWriteCount: 1,
       monitorCount: 0,
     });
-    expect(writes.map((args) => args[1])).toEqual(['monitor:1', 'monitor:2']);
+    expect(writes.map((args) => args[1])).toEqual([
+      expect.stringMatching(/^batch:1700000000:[0-9a-z]+$/),
+    ]);
+    expect(JSON.parse(writes[0]![3] as string).map((monitor: { id: number }) => monitor.id)).toEqual([
+      1,
+      2,
+    ]);
   });
 });

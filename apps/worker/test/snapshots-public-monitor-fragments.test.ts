@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildHomepageArtifactMonitorFragmentWrites,
+  parseHomepageArtifactMonitorFragmentRows,
+} from '../src/snapshots/public-homepage';
+import {
   assemblePublicHomepagePayloadFromFragments,
   assemblePublicStatusPayloadFromFragments,
   buildHomepageEnvelopeFragmentWrite,
@@ -28,6 +32,20 @@ import {
   toPublicMonitorFragmentKey,
 } from '../src/snapshots/public-monitor-fragments';
 import { createFakeD1Database } from './helpers/fake-d1';
+
+function rowFromWrite(write: {
+  fragmentKey: string;
+  generatedAt: number;
+  bodyJson: string;
+  updatedAt: number;
+}) {
+  return {
+    fragment_key: write.fragmentKey,
+    generated_at: write.generatedAt,
+    body_json: write.bodyJson,
+    updated_at: write.updatedAt,
+  };
+}
 
 function statusMonitor(id: number) {
   return {
@@ -167,14 +185,14 @@ describe('snapshots/public-monitor-fragments', () => {
   it('serializes status monitor fragments without duplicating the status envelope', () => {
     const writes = buildStatusMonitorFragmentWrites(statusPayload(), 1_700_000_005);
 
-    expect(writes).toHaveLength(2);
+    expect(writes).toHaveLength(1);
     expect(writes[0]).toMatchObject({
       snapshotKey: STATUS_MONITOR_FRAGMENTS_KEY,
-      fragmentKey: 'monitor:1',
       generatedAt: 1_700_000_000,
       updatedAt: 1_700_000_005,
     });
-    expect(JSON.parse(writes[0]!.bodyJson)).toEqual(statusMonitor(1));
+    expect(writes[0]?.fragmentKey).toMatch(/^batch:1700000000:[0-9a-z]+$/);
+    expect(JSON.parse(writes[0]!.bodyJson)).toEqual([statusMonitor(1), statusMonitor(2)]);
     expect(writes[0]!.bodyJson).toContain('heartbeats');
     expect(writes[0]!.bodyJson).toContain('uptime_days');
     expect(writes[0]!.bodyJson).not.toContain('site_title');
@@ -184,8 +202,8 @@ describe('snapshots/public-monitor-fragments', () => {
     const writes = buildStatusMonitorFragmentWrites(statusPayload(), 1_700_000_005, [2]);
 
     expect(writes).toHaveLength(1);
-    expect(writes[0]?.fragmentKey).toBe('monitor:2');
-    expect(JSON.parse(writes[0]!.bodyJson).id).toBe(2);
+    expect(writes[0]?.fragmentKey).toMatch(/^batch:1700000000:[0-9a-z]+$/);
+    expect(JSON.parse(writes[0]!.bodyJson)).toEqual([statusMonitor(2)]);
   });
 
   it('serializes homepage monitor fragments separately from status fragments', () => {
@@ -194,11 +212,11 @@ describe('snapshots/public-monitor-fragments', () => {
     expect(writes).toHaveLength(1);
     expect(writes[0]).toMatchObject({
       snapshotKey: HOMEPAGE_MONITOR_FRAGMENTS_KEY,
-      fragmentKey: 'monitor:1',
       generatedAt: 1_700_000_000,
       updatedAt: 1_700_000_005,
     });
-    expect(JSON.parse(writes[0]!.bodyJson)).toEqual(homepageMonitor(1));
+    expect(writes[0]?.fragmentKey).toMatch(/^batch:1700000000:[0-9a-z]+$/);
+    expect(JSON.parse(writes[0]!.bodyJson)).toEqual([homepageMonitor(1)]);
     expect(writes[0]!.bodyJson).toContain('heartbeat_strip');
     expect(writes[0]!.bodyJson).toContain('uptime_day_strip');
     expect(writes[0]!.bodyJson).not.toContain('bootstrap_mode');
@@ -248,35 +266,19 @@ describe('snapshots/public-monitor-fragments', () => {
 
     const statusEnvelope = parseStatusEnvelopeFragmentRows([
       {
-        fragment_key: statusEnvelopeWrite.fragmentKey,
-        generated_at: statusEnvelopeWrite.generatedAt,
-        body_json: statusEnvelopeWrite.bodyJson,
-        updated_at: statusEnvelopeWrite.updatedAt,
+        ...rowFromWrite(statusEnvelopeWrite),
       },
     ]);
     const statusMonitors = parseStatusMonitorFragmentRows(
-      statusMonitorWrites.map((write) => ({
-        fragment_key: write.fragmentKey,
-        generated_at: write.generatedAt,
-        body_json: write.bodyJson,
-        updated_at: write.updatedAt,
-      })),
+      statusMonitorWrites.map(rowFromWrite),
     );
     const homepageEnvelope = parseHomepageEnvelopeFragmentRows([
       {
-        fragment_key: homepageEnvelopeWrite.fragmentKey,
-        generated_at: homepageEnvelopeWrite.generatedAt,
-        body_json: homepageEnvelopeWrite.bodyJson,
-        updated_at: homepageEnvelopeWrite.updatedAt,
+        ...rowFromWrite(homepageEnvelopeWrite),
       },
     ]);
     const homepageMonitors = parseHomepageMonitorFragmentRows(
-      homepageMonitorWrites.map((write) => ({
-        fragment_key: write.fragmentKey,
-        generated_at: write.generatedAt,
-        body_json: write.bodyJson,
-        updated_at: write.updatedAt,
-      })),
+      homepageMonitorWrites.map(rowFromWrite),
     );
 
     expect(statusEnvelope?.generatedAt).toBe(1_700_000_000);
@@ -295,36 +297,16 @@ describe('snapshots/public-monitor-fragments', () => {
         match: 'from public_snapshot_fragments',
         all: (args) => {
           if (args[0] === STATUS_ENVELOPE_FRAGMENT_KEY) {
-            return [{
-              fragment_key: statusEnvelopeWrite.fragmentKey,
-              generated_at: statusEnvelopeWrite.generatedAt,
-              body_json: statusEnvelopeWrite.bodyJson,
-              updated_at: statusEnvelopeWrite.updatedAt,
-            }];
+            return [rowFromWrite(statusEnvelopeWrite)];
           }
           if (args[0] === STATUS_MONITOR_FRAGMENTS_KEY) {
-            return statusMonitorWrites.map((write) => ({
-              fragment_key: write.fragmentKey,
-              generated_at: write.generatedAt,
-              body_json: write.bodyJson,
-              updated_at: write.updatedAt,
-            }));
+            return statusMonitorWrites.map(rowFromWrite);
           }
           if (args[0] === HOMEPAGE_ENVELOPE_FRAGMENT_KEY) {
-            return [{
-              fragment_key: homepageEnvelopeWrite.fragmentKey,
-              generated_at: homepageEnvelopeWrite.generatedAt,
-              body_json: homepageEnvelopeWrite.bodyJson,
-              updated_at: homepageEnvelopeWrite.updatedAt,
-            }];
+            return [rowFromWrite(homepageEnvelopeWrite)];
           }
           if (args[0] === HOMEPAGE_MONITOR_FRAGMENTS_KEY) {
-            return homepageMonitorWrites.map((write) => ({
-              fragment_key: write.fragmentKey,
-              generated_at: write.generatedAt,
-              body_json: write.bodyJson,
-              updated_at: write.updatedAt,
-            }));
+            return homepageMonitorWrites.map(rowFromWrite);
           }
           return [];
         },
@@ -351,36 +333,16 @@ describe('snapshots/public-monitor-fragments', () => {
         match: 'from public_snapshot_fragments',
         all: (args) => {
           if (args[0] === STATUS_ENVELOPE_FRAGMENT_KEY) {
-            return [{
-              fragment_key: statusEnvelopeWrite.fragmentKey,
-              generated_at: statusEnvelopeWrite.generatedAt,
-              body_json: statusEnvelopeWrite.bodyJson,
-              updated_at: statusEnvelopeWrite.updatedAt,
-            }];
+            return [rowFromWrite(statusEnvelopeWrite)];
           }
           if (args[0] === STATUS_MONITOR_FRAGMENTS_KEY) {
-            return statusMonitorWrites.map((write) => ({
-              fragment_key: write.fragmentKey,
-              generated_at: write.generatedAt,
-              body_json: write.bodyJson,
-              updated_at: write.updatedAt,
-            }));
+            return statusMonitorWrites.map(rowFromWrite);
           }
           if (args[0] === HOMEPAGE_ENVELOPE_FRAGMENT_KEY) {
-            return [{
-              fragment_key: homepageEnvelopeWrite.fragmentKey,
-              generated_at: homepageEnvelopeWrite.generatedAt,
-              body_json: homepageEnvelopeWrite.bodyJson,
-              updated_at: homepageEnvelopeWrite.updatedAt,
-            }];
+            return [rowFromWrite(homepageEnvelopeWrite)];
           }
           if (args[0] === HOMEPAGE_MONITOR_FRAGMENTS_KEY) {
-            return homepageMonitorWrites.map((write) => ({
-              fragment_key: write.fragmentKey,
-              generated_at: write.generatedAt,
-              body_json: write.bodyJson,
-              updated_at: write.updatedAt,
-            }));
+            return homepageMonitorWrites.map(rowFromWrite);
           }
           return [];
         },
@@ -434,12 +396,85 @@ describe('snapshots/public-monitor-fragments', () => {
     expect(writes).toEqual([
       {
         snapshotKey: MONITOR_RUNTIME_UPDATE_FRAGMENTS_KEY,
-        fragmentKey: 'monitor:1',
+        fragmentKey: expect.stringMatching(/^batch:1700000060:[0-9a-z]+$/),
         generatedAt: 1_700_000_060,
-        bodyJson: '[1,60,1699999000,1700000060,"up","up",42]',
+        bodyJson: '[[1,60,1699999000,1700000060,"up","up",42]]',
         updatedAt: 1_700_000_065,
       },
     ]);
+  });
+
+  it('reads mixed legacy and batch monitor fragments with newest generated_at winning', () => {
+    const batchWrite = buildStatusMonitorFragmentWrites(statusPayload(), 1_700_000_005)[0]!;
+    const parsed = parseStatusMonitorFragmentRows([
+      {
+        fragment_key: 'monitor:1',
+        generated_at: 1_699_999_940,
+        body_json: JSON.stringify({ ...statusMonitor(1), name: 'old' }),
+        updated_at: 1_699_999_945,
+      },
+      rowFromWrite(batchWrite),
+    ]);
+
+    expect(parsed.invalidCount).toBe(0);
+    expect(parsed.data).toEqual([statusMonitor(1), statusMonitor(2)]);
+  });
+
+  it('reads compact runtime update batch fragments and keeps the latest update per monitor', () => {
+    const batchWrites = buildMonitorRuntimeUpdateFragmentWrites(
+      [
+        {
+          monitor_id: 2,
+          interval_sec: 60,
+          created_at: 1_699_999_000,
+          checked_at: 1_700_000_060,
+          check_status: 'up',
+          next_status: 'up',
+          latency_ms: 44,
+        },
+        {
+          monitor_id: 1,
+          interval_sec: 60,
+          created_at: 1_699_999_000,
+          checked_at: 1_700_000_060,
+          check_status: 'up',
+          next_status: 'up',
+          latency_ms: 42,
+        },
+      ],
+      1_700_000_065,
+    );
+
+    const parsed = parseMonitorRuntimeUpdateFragmentRows([
+      {
+        fragment_key: 'monitor:1',
+        generated_at: 1_700_000_000,
+        body_json: '[1,60,1699999000,1700000000,"down","down",null]',
+        updated_at: 1_700_000_005,
+      },
+      rowFromWrite(batchWrites[0]!),
+    ]);
+
+    expect(parsed.invalidCount).toBe(0);
+    expect(parsed.updates.map((update) => update.monitor_id)).toEqual([1, 2]);
+    expect(parsed.updates[0]).toMatchObject({ monitor_id: 1, checked_at: 1_700_000_060 });
+  });
+
+  it('serializes and reads homepage artifact monitor batch fragments', () => {
+    const writes = buildHomepageArtifactMonitorFragmentWrites(homepagePayload(), 1_700_000_005);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]?.fragmentKey).toMatch(/^batch:1700000000:[0-9a-z]+$/);
+
+    const parsed = parseHomepageArtifactMonitorFragmentRows(
+      writes.map(rowFromWrite),
+      homepagePayload(),
+    );
+
+    expect(parsed.invalidCount).toBe(0);
+    expect(parsed.staleCount).toBe(0);
+    expect(parsed.missingCount).toBe(0);
+    expect(parsed.monitorNameById.get(1)).toBe('Monitor 1');
+    expect(parsed.cardHtmlByMonitorId.get(1)).toContain('Monitor 1');
   });
 
   it('reads valid compact runtime update fragments and reports skipped rows', async () => {

@@ -7,6 +7,11 @@ import {
 } from '@uptimer/db/json';
 import type { HttpResponseMatchMode, MonitorStatus } from '@uptimer/db/schema';
 
+import {
+  parseCheckResultsV2Compact,
+  writeCheckResultsV2,
+  type CheckResultV2Entry,
+} from '../check-results-v2';
 import type { Env } from '../env';
 import { runInternalHomepageRefreshCore } from '../internal/homepage-refresh-core';
 import type { Trace } from '../observability/trace';
@@ -53,14 +58,8 @@ const BATCH_EXECUTION_LOCK_RENEW_MIN_REMAINING_SECONDS = 5 * 60;
 
 const CHECK_CONCURRENCY = 5;
 const D1_MAX_SQL_VARIABLES = 100;
-const CHECK_RESULT_BINDINGS_PER_ROW = 8;
 const MONITOR_STATE_BINDINGS_PER_ROW = 8;
-const PERSIST_BATCH_SIZE = Math.max(
-  1,
-  Math.floor(
-    D1_MAX_SQL_VARIABLES / Math.max(CHECK_RESULT_BINDINGS_PER_ROW, MONITOR_STATE_BINDINGS_PER_ROW),
-  ),
-);
+const PERSIST_BATCH_SIZE = Math.max(1, Math.floor(D1_MAX_SQL_VARIABLES / MONITOR_STATE_BINDINGS_PER_ROW));
 
 async function refreshHomepageSnapshotInline(env: Env, now: number): Promise<void> {
   const [
@@ -103,6 +102,7 @@ type MonitorBatchStats = {
 
 type MonitorBatchExecutionResult = {
   runtimeUpdates: MonitorRuntimeUpdate[];
+  checkResults: CheckResultV2Entry[];
   stats: MonitorBatchStats;
   checksDurMs: number;
   persistDurMs: number;
@@ -272,40 +272,6 @@ async function fetchSelfWithTimeout(
   } finally {
     signal?.removeEventListener('abort', abortFromParent);
     clearTimeout(timeout);
-  }
-}
-
-async function writeRuntimeUpdateFragmentsViaService(
-  env: Env,
-  runtimeUpdates: readonly MonitorRuntimeUpdate[],
-  signal?: AbortSignal,
-): Promise<void> {
-  if (runtimeUpdates.length === 0) {
-    return;
-  }
-  if (!env.ADMIN_TOKEN) {
-    throw new Error('ADMIN_TOKEN missing');
-  }
-
-  const res = await fetchSelfWithTimeout(
-    env,
-    new Request('http://internal/api/v1/internal/write/runtime-update-fragments', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${env.ADMIN_TOKEN}`,
-        'Content-Type': 'application/json; charset=utf-8',
-      },
-      body: JSON.stringify({
-        runtime_updates: encodeMonitorRuntimeUpdatesCompact(runtimeUpdates),
-      }),
-    }),
-    RUNTIME_FRAGMENTS_REFRESH_SERVICE_TIMEOUT_MS,
-    'runtime update fragments write service',
-    signal,
-  );
-  const bodyText = await res.text().catch(() => '');
-  if (!res.ok) {
-    throw new Error(`runtime update fragments write failed: HTTP ${res.status} ${bodyText}`.trim());
   }
 }
 
@@ -550,7 +516,7 @@ async function startShardedPublicSnapshotContinuationViaService(
     : {
         step: 'seed',
         kind: 'homepage',
-        part: 'envelope',
+        part: 'all',
         monitor_offset: 0,
         monitor_limit: monitorLimit,
       };
@@ -677,6 +643,7 @@ function createEmptyMonitorBatchStats(): MonitorBatchStats {
 function createEmptyMonitorBatchExecutionResult(): MonitorBatchExecutionResult {
   return {
     runtimeUpdates: [],
+    checkResults: [],
     stats: createEmptyMonitorBatchStats(),
     checksDurMs: 0,
     persistDurMs: 0,
@@ -693,6 +660,11 @@ function toScheduledCheckBatchServiceResult(value: unknown): ScheduledCheckBatch
   if (!runtimeUpdates) {
     throw new Error('service batch returned invalid runtime_updates');
   }
+  const checkResults =
+    value.check_results === undefined ? [] : parseCheckResultsV2Compact(value.check_results);
+  if (!checkResults) {
+    throw new Error('service batch returned invalid check_results');
+  }
 
   const stats: MonitorBatchStats = {
     processedCount: Math.max(0, toInteger(value.processed_count) ?? runtimeUpdates.length),
@@ -707,6 +679,7 @@ function toScheduledCheckBatchServiceResult(value: unknown): ScheduledCheckBatch
 
   return {
     runtimeUpdates,
+    checkResults,
     stats,
     checksDurMs: Math.max(0, toNumber(value.checks_duration_ms) ?? 0),
     persistDurMs: Math.max(0, toNumber(value.persist_duration_ms) ?? 0),
@@ -733,6 +706,7 @@ async function runScheduledCheckBatchViaService(
     ...(context.runtimeFragmentsOnly && !returnRuntimeUpdatesForSplit
       ? { 'X-Uptimer-Runtime-Fragments-Only': '1' }
       : {}),
+    ...(returnRuntimeUpdatesForSplit ? { 'X-Uptimer-Skip-Runtime-Fragment-Writes': '1' } : {}),
   };
   if (traceScheduledRefresh) {
     headers['X-Uptimer-Trace'] = '1';
@@ -1293,7 +1267,6 @@ function computeStateLastError(
 }
 
 type PersistStatementTemplates = {
-  insertCheckResultByRowCount: Map<number, D1PreparedStatement>;
   upsertMonitorStateByRowCount: Map<number, D1PreparedStatement>;
   openOutageIfMissing: D1PreparedStatement;
   closeOutage: D1PreparedStatement;
@@ -1311,32 +1284,6 @@ function buildNumberedTuplePlaceholders(rowCount: number, bindingsPerRow: number
     tuples.push(`(${placeholders.join(', ')})`);
   }
   return tuples.join(', ');
-}
-
-function getInsertCheckResultStatement(
-  db: D1Database,
-  templates: PersistStatementTemplates,
-  rowCount: number,
-): D1PreparedStatement {
-  const cached = templates.insertCheckResultByRowCount.get(rowCount);
-  if (cached) {
-    return cached;
-  }
-
-  const statement = db.prepare(`
-    INSERT INTO check_results (
-      monitor_id,
-      checked_at,
-      status,
-      latency_ms,
-      http_status,
-      error,
-      location,
-      attempt
-    ) VALUES ${buildNumberedTuplePlaceholders(rowCount, CHECK_RESULT_BINDINGS_PER_ROW)}
-  `);
-  templates.insertCheckResultByRowCount.set(rowCount, statement);
-  return statement;
 }
 
 function getUpsertMonitorStateStatement(
@@ -1375,19 +1322,17 @@ function getUpsertMonitorStateStatement(
   return statement;
 }
 
-function toCheckResultBindings(completed: CompletedDueMonitor): unknown[] {
-  const { row, checkedAt, outcome } = completed;
+function toCheckResultV2Entry(completed: CompletedDueMonitor): CheckResultV2Entry {
+  const { row, outcome } = completed;
   const checkError = outcome.status === 'up' ? null : outcome.error;
-  return [
-    row.id,
-    checkedAt,
-    outcome.status,
-    outcome.latencyMs,
-    outcome.httpStatus,
-    checkError,
-    null,
-    outcome.attempts,
-  ];
+  return {
+    monitorId: row.id,
+    status: outcome.status,
+    latencyMs: outcome.latencyMs,
+    httpStatus: outcome.httpStatus,
+    error: checkError,
+    attempt: outcome.attempts,
+  };
 }
 
 function toMonitorStateBindings(completed: CompletedDueMonitor): unknown[] {
@@ -1601,7 +1546,6 @@ async function persistCompletedMonitors(
 ): Promise<void> {
   const cached = persistStatementTemplatesByDb.get(db);
   const templates = cached ?? {
-    insertCheckResultByRowCount: new Map<number, D1PreparedStatement>(),
     upsertMonitorStateByRowCount: new Map<number, D1PreparedStatement>(),
     openOutageIfMissing: db.prepare(PERSIST_STATEMENTS_SQL.openOutageIfMissing),
     closeOutage: db.prepare(PERSIST_STATEMENTS_SQL.closeOutage),
@@ -1616,11 +1560,6 @@ async function persistCompletedMonitors(
     const statements: D1PreparedStatement[] = [];
 
     if (chunk.length > 0) {
-      const checkResultBindings = chunk.flatMap((monitor) => toCheckResultBindings(monitor));
-      statements.push(
-        getInsertCheckResultStatement(db, templates, chunk.length).bind(...checkResultBindings),
-      );
-
       const monitorStateBindings = chunk.flatMap((monitor) => toMonitorStateBindings(monitor));
       statements.push(
         getUpsertMonitorStateStatement(db, templates, chunk.length).bind(...monitorStateBindings),
@@ -1718,9 +1657,13 @@ export async function runPersistedMonitorBatch(opts: {
   const runtimeUpdates = opts.trace
     ? opts.trace.time('batch_runtime_updates', () => completed.map(toMonitorRuntimeUpdate))
     : completed.map(toMonitorRuntimeUpdate);
+  const checkResults = opts.trace
+    ? opts.trace.time('batch_check_results_v2', () => completed.map(toCheckResultV2Entry))
+    : completed.map(toCheckResultV2Entry);
 
   return {
     runtimeUpdates,
+    checkResults,
     stats: summarizeCompletedMonitors(completed, rejectedCount),
     checksDurMs,
     persistDurMs,
@@ -1914,7 +1857,9 @@ export async function runScheduledTick(env: Env, ctx: ExecutionContext): Promise
     let batchWallDurMs = 0;
     let runtimeSnapshotDurMs = 0;
     let runtimeUpdates: MonitorRuntimeUpdate[] = [];
+    let checkResults: CheckResultV2Entry[] = [];
     let runtimeSnapshotBaseline: PublicMonitorRuntimeSnapshot | undefined;
+    let runtimeFragmentsRefreshedInline = false;
     let requiresRuntimeSnapshotRebuild = false;
     let requiresFullHomepageRefresh = false;
     const aggregateStats: MonitorBatchStats = {
@@ -1983,6 +1928,7 @@ export async function runScheduledTick(env: Env, ctx: ExecutionContext): Promise
 
       for (const batch of batchResults) {
         runtimeUpdates.push(...batch.runtimeUpdates);
+        checkResults.push(...batch.checkResults);
         checksDurMs += batch.checksDurMs;
         persistDurMs += batch.persistDurMs;
         mergeBatchStats(aggregateStats, batch.stats);
@@ -1991,11 +1937,29 @@ export async function runScheduledTick(env: Env, ctx: ExecutionContext): Promise
       if (splitRuntimeFragmentWrites && runtimeUpdates.length > 0) {
         const runtimeFragmentWriteStart = performance.now();
         try {
-          await writeRuntimeUpdateFragmentsViaService(env, runtimeUpdates, schedulerLease.signal);
-          runtimeUpdates = [];
+          const [{ buildMonitorRuntimeUpdateFragmentWrites }, { writePublicSnapshotFragments }] =
+            await Promise.all([
+              import('../snapshots/public-monitor-fragments'),
+              import('../snapshots/public-fragments'),
+            ]);
+          const fragmentWrites = buildMonitorRuntimeUpdateFragmentWrites(
+            runtimeUpdates,
+            currentNow(),
+          );
+          if (fragmentWrites.length > 0) {
+            await writePublicSnapshotFragments(env.DB, fragmentWrites);
+          }
+          const runtimeSnapshotNow = currentNow();
+          runtimeSnapshotBaseline = await refreshPublicMonitorRuntimeSnapshot({
+            db: env.DB,
+            now: runtimeSnapshotNow,
+            updates: runtimeUpdates,
+            rebuild: async () => await rebuildPublicMonitorRuntimeSnapshot(env.DB, runtimeSnapshotNow),
+          });
+          runtimeFragmentsRefreshedInline = true;
           runtimeSnapshotDurMs = performance.now() - runtimeFragmentWriteStart;
         } catch (err) {
-          console.warn('runtime update fragments write: service write failed', err);
+          console.warn('runtime update fragments write: inline refresh failed', err);
           requiresRuntimeSnapshotRebuild = true;
           requiresFullHomepageRefresh = true;
         }
@@ -2014,6 +1978,7 @@ export async function runScheduledTick(env: Env, ctx: ExecutionContext): Promise
       });
       batchWallDurMs = batch.checksDurMs + batch.persistDurMs;
       runtimeUpdates = batch.runtimeUpdates;
+      checkResults = batch.checkResults;
       checksDurMs = batch.checksDurMs;
       persistDurMs = batch.persistDurMs;
       mergeBatchStats(aggregateStats, batch.stats);
@@ -2021,13 +1986,21 @@ export async function runScheduledTick(env: Env, ctx: ExecutionContext): Promise
 
     const runtimeSnapshotNow = currentNow();
 
+    if (checkResults.length > 0) {
+      try {
+        await writeCheckResultsV2(env.DB, checkedAt, checkResults);
+      } catch (err) {
+        console.warn('scheduled: check_results_v2 write failed', err);
+      }
+    }
+
     if (requiresRuntimeSnapshotRebuild) {
       const runtimeSnapshotStart = performance.now();
       const rebuiltSnapshot = await rebuildPublicMonitorRuntimeSnapshot(env.DB, runtimeSnapshotNow);
       await writePublicMonitorRuntimeSnapshot(env.DB, rebuiltSnapshot, runtimeSnapshotNow);
       runtimeSnapshotBaseline = rebuiltSnapshot;
       runtimeSnapshotDurMs = performance.now() - runtimeSnapshotStart;
-    } else if (runtimeUpdates.length > 0) {
+    } else if (runtimeUpdates.length > 0 && !runtimeFragmentsRefreshedInline) {
       const runtimeSnapshotStart = performance.now();
       runtimeSnapshotBaseline = await refreshPublicMonitorRuntimeSnapshot({
         db: env.DB,
@@ -2052,16 +2025,18 @@ export async function runScheduledTick(env: Env, ctx: ExecutionContext): Promise
     }
 
     const queuePostCheckRefresh = () => {
+      const shouldRefreshRuntimeFragmentsViaService =
+        activeRuntimeFragmentPipeline && !runtimeFragmentsRefreshedInline;
       if (
         shouldUseScheduledShardedContinuation(env) &&
         shouldSkipScheduledHomepageRefreshForShardedSnapshots(env) &&
         !requiresFullHomepageRefresh
       ) {
         return startShardedPublicSnapshotContinuationViaService(env, {
-          refreshRuntimeFragments: activeRuntimeFragmentPipeline,
+          refreshRuntimeFragments: shouldRefreshRuntimeFragmentsViaService,
         }).catch(async (err) => {
           console.warn('sharded continuation: service start failed', err);
-          if (activeRuntimeFragmentPipeline) {
+          if (shouldRefreshRuntimeFragmentsViaService) {
             await refreshRuntimeFragmentsViaService(env).catch((refreshErr) => {
               console.warn('runtime fragments refresh: service refresh failed', refreshErr);
             });
@@ -2070,7 +2045,7 @@ export async function runScheduledTick(env: Env, ctx: ExecutionContext): Promise
         });
       }
 
-      if (activeRuntimeFragmentPipeline && !requiresFullHomepageRefresh) {
+      if (shouldRefreshRuntimeFragmentsViaService && !requiresFullHomepageRefresh) {
         return refreshRuntimeFragmentsViaService(env)
           .then(() => queueHomepageRefresh())
           .catch(async (err) => {

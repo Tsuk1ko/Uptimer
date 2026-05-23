@@ -5,7 +5,21 @@
 --   notification channels: 900001-900099
 
 -- 1) Clean previously seeded data (id-range scoped, avoids touching user-created rows).
-DELETE FROM check_results WHERE monitor_id BETWEEN 900001 AND 900099;
+UPDATE check_results_v2
+SET results_json = COALESCE(
+  (
+    SELECT json_group_object(j.key, json(j.value))
+    FROM json_each(check_results_v2.results_json) AS j
+    WHERE CAST(j.key AS INTEGER) NOT BETWEEN 900001 AND 900099
+  ),
+  '{}'
+)
+WHERE EXISTS (
+  SELECT 1
+  FROM json_each(check_results_v2.results_json) AS j
+  WHERE CAST(j.key AS INTEGER) BETWEEN 900001 AND 900099
+);
+DELETE FROM check_results_v2 WHERE results_json = '{}';
 DELETE FROM monitor_daily_rollups WHERE monitor_id BETWEEN 900001 AND 900099;
 DELETE FROM outages WHERE monitor_id BETWEEN 900001 AND 900099;
 DELETE FROM monitor_state WHERE monitor_id BETWEEN 900001 AND 900099;
@@ -195,86 +209,91 @@ WITH RECURSIVE seq(i) AS (
   SELECT 0
   UNION ALL
   SELECT i + 1 FROM seq WHERE i < 59
-)
-INSERT INTO check_results (monitor_id, checked_at, status, latency_ms, http_status, error, location, attempt)
-SELECT
-  900001,
-  CAST(strftime('%s','now') AS INTEGER) - i * 60,
-  'up',
-  80 + (i % 6) * 5,
-  200,
-  NULL,
-  'LAX',
-  1
-FROM seq;
-
-WITH RECURSIVE seq(i) AS (
-  SELECT 0
+),
+base(now_minute) AS (
+  SELECT (CAST(strftime('%s','now') AS INTEGER) / 60) * 60
+),
+sample_rows(monitor_id, checked_at, status, latency_ms, http_status, error, attempt) AS (
+  SELECT
+    900001,
+    base.now_minute - seq.i * 60,
+    'up',
+    80 + (seq.i % 6) * 5,
+    200,
+    NULL,
+    1
+  FROM seq, base
   UNION ALL
-  SELECT i + 1 FROM seq WHERE i < 59
-)
-INSERT INTO check_results (monitor_id, checked_at, status, latency_ms, http_status, error, location, attempt)
-SELECT
-  900002,
-  CAST(strftime('%s','now') AS INTEGER) - i * 60,
-  CASE WHEN i <= 45 THEN 'down' ELSE 'up' END,
-  CASE WHEN i <= 45 THEN NULL ELSE 140 + (i % 4) * 10 END,
-  CASE WHEN i <= 45 THEN 503 ELSE 200 END,
-  CASE WHEN i <= 45 THEN 'HTTP 503' ELSE NULL END,
-  'LAX',
-  1
-FROM seq;
-
-WITH RECURSIVE seq(i) AS (
-  SELECT 0
+  SELECT
+    900002,
+    base.now_minute - seq.i * 60,
+    CASE WHEN seq.i <= 45 THEN 'down' ELSE 'up' END,
+    CASE WHEN seq.i <= 45 THEN NULL ELSE 140 + (seq.i % 4) * 10 END,
+    CASE WHEN seq.i <= 45 THEN 503 ELSE 200 END,
+    CASE WHEN seq.i <= 45 THEN 'HTTP 503' ELSE NULL END,
+    1
+  FROM seq, base
   UNION ALL
-  SELECT i + 1 FROM seq WHERE i < 59
-)
-INSERT INTO check_results (monitor_id, checked_at, status, latency_ms, http_status, error, location, attempt)
-SELECT
-  900003,
-  CAST(strftime('%s','now') AS INTEGER) - i * 60,
-  'maintenance',
-  NULL,
-  NULL,
-  NULL,
-  'LAX',
-  1
-FROM seq;
-
-WITH RECURSIVE seq(i) AS (
-  SELECT 0
+  SELECT
+    900003,
+    base.now_minute - seq.i * 60,
+    'maintenance',
+    NULL,
+    NULL,
+    NULL,
+    1
+  FROM seq, base
   UNION ALL
-  SELECT i + 1 FROM seq WHERE i < 11
-)
-INSERT INTO check_results (monitor_id, checked_at, status, latency_ms, http_status, error, location, attempt)
-SELECT
-  900005,
-  CAST(strftime('%s','now') AS INTEGER) - (i + 2) * 600,
-  CASE WHEN i < 6 THEN 'unknown' ELSE 'up' END,
-  CASE WHEN i < 6 THEN NULL ELSE 600 + (i % 3) * 100 END,
-  CASE WHEN i < 6 THEN NULL ELSE 200 END,
-  CASE WHEN i < 6 THEN 'Upstream timeout' ELSE NULL END,
-  'LAX',
-  1
-FROM seq;
-
-WITH RECURSIVE seq(i) AS (
-  SELECT 0
+  SELECT
+    900005,
+    base.now_minute - (seq.i + 2) * 600,
+    CASE WHEN seq.i < 6 THEN 'unknown' ELSE 'up' END,
+    CASE WHEN seq.i < 6 THEN NULL ELSE 600 + (seq.i % 3) * 100 END,
+    CASE WHEN seq.i < 6 THEN NULL ELSE 200 END,
+    CASE WHEN seq.i < 6 THEN 'Upstream timeout' ELSE NULL END,
+    1
+  FROM seq, base
+  WHERE seq.i < 12
   UNION ALL
-  SELECT i + 1 FROM seq WHERE i < 59
+  SELECT
+    900006,
+    base.now_minute - seq.i * 60,
+    CASE WHEN (seq.i % 10) < 3 THEN 'down' ELSE 'up' END,
+    CASE WHEN (seq.i % 10) < 3 THEN NULL ELSE 110 + (seq.i % 8) * 10 END,
+    NULL,
+    CASE WHEN (seq.i % 10) < 3 THEN 'TCP connect timeout' ELSE NULL END,
+    1
+  FROM seq, base
 )
-INSERT INTO check_results (monitor_id, checked_at, status, latency_ms, http_status, error, location, attempt)
+INSERT INTO check_results_v2 (checked_at, results_json, schema_version)
 SELECT
-  900006,
-  CAST(strftime('%s','now') AS INTEGER) - i * 60,
-  CASE WHEN (i % 10) < 3 THEN 'down' ELSE 'up' END,
-  CASE WHEN (i % 10) < 3 THEN NULL ELSE 110 + (i % 8) * 10 END,
-  NULL,
-  CASE WHEN (i % 10) < 3 THEN 'TCP connect timeout' ELSE NULL END,
-  'LAX',
+  checked_at,
+  json_group_object(
+    CAST(monitor_id AS TEXT),
+    json_object(
+      's',
+      CASE status
+        WHEN 'up' THEN 'u'
+        WHEN 'down' THEN 'd'
+        WHEN 'maintenance' THEN 'm'
+        ELSE 'x'
+      END,
+      'l',
+      latency_ms,
+      'h',
+      http_status,
+      'e',
+      error,
+      'a',
+      attempt
+    )
+  ),
   1
-FROM seq;
+FROM sample_rows
+GROUP BY checked_at
+ON CONFLICT(checked_at) DO UPDATE SET
+  results_json = json_patch(check_results_v2.results_json, excluded.results_json),
+  schema_version = excluded.schema_version;
 
 -- 5) Outages + incidents + maintenance windows.
 INSERT INTO outages (monitor_id, started_at, ended_at, initial_error, last_error)

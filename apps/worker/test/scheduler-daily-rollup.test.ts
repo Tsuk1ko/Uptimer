@@ -87,7 +87,7 @@ describe('scheduler/daily-rollup', () => {
         },
       },
       {
-        match: (sql) => sql.includes('from check_results') && sql.includes('monitor_id in'),
+        match: (sql) => sql.includes('from check_results_v2_expanded') && sql.includes('monitor_id in'),
         all: (args) => {
           checkQueryArgs.push(args);
           return [
@@ -186,7 +186,7 @@ describe('scheduler/daily-rollup', () => {
         all: () => [],
       },
       {
-        match: (sql) => sql.includes('from check_results') && sql.includes('monitor_id in'),
+        match: (sql) => sql.includes('from check_results_v2_expanded') && sql.includes('monitor_id in'),
         all: (args) => {
           checkQueryArgs.push(args);
           return [];
@@ -245,7 +245,7 @@ describe('scheduler/daily-rollup', () => {
         },
       },
       {
-        match: (sql) => sql.includes('from check_results') && sql.includes('monitor_id in'),
+        match: (sql) => sql.includes('from check_results_v2_expanded') && sql.includes('monitor_id in'),
         all: () => {
           checkCalls += 1;
           return [];

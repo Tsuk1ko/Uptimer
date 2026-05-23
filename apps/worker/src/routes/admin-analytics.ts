@@ -304,7 +304,7 @@ async function computePartialDayRow(
     .prepare(
       `
         SELECT checked_at, status, latency_ms
-        FROM check_results
+        FROM check_results_v2_expanded
         WHERE monitor_id = ?1
           AND checked_at >= ?2
           AND checked_at < ?3
@@ -449,7 +449,7 @@ adminAnalyticsRoutes.get('/monitors/:id', async (c) => {
     const { results: checkRows } = await c.env.DB.prepare(
       `
         SELECT checked_at, status, latency_ms
-        FROM check_results
+        FROM check_results_v2_expanded
         WHERE monitor_id = ?1
           AND checked_at >= ?2
           AND checked_at < ?3

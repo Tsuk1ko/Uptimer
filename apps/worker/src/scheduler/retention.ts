@@ -3,7 +3,7 @@ import type { Env } from '../env';
 import { readSettings } from '../settings';
 import { acquireLease } from './lock';
 
-const LOCK_NAME = 'retention:check_results';
+const LOCK_NAME = 'retention:check_results_v2';
 const LOCK_LEASE_SECONDS = 10 * 60;
 
 // Keep delete batches bounded to avoid long-running SQLite statements.
@@ -27,10 +27,10 @@ export async function runRetention(env: Env, controller: ScheduledController): P
   for (let i = 0; i < MAX_BATCHES; i++) {
     const r = await env.DB.prepare(
       `
-        DELETE FROM check_results
-        WHERE id IN (
-          SELECT id
-          FROM check_results
+        DELETE FROM check_results_v2
+        WHERE checked_at IN (
+          SELECT checked_at
+          FROM check_results_v2
           WHERE checked_at < ?1
           ORDER BY checked_at
           LIMIT ?2

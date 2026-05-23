@@ -639,7 +639,6 @@ adminRoutes.delete('/monitors/:id', async (c) => {
   // consistent. We hard-delete and cascade-delete all monitor-scoped records.
   // (No FK constraints are enforced by D1 here.)
   await c.env.DB.batch([
-    c.env.DB.prepare('DELETE FROM check_results WHERE monitor_id = ?1').bind(id),
     c.env.DB.prepare('DELETE FROM outages WHERE monitor_id = ?1').bind(id),
     c.env.DB.prepare('DELETE FROM monitor_state WHERE monitor_id = ?1').bind(id),
     c.env.DB.prepare('DELETE FROM monitor_daily_rollups WHERE monitor_id = ?1').bind(id),

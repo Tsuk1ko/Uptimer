@@ -122,7 +122,22 @@ function createEnv(options: CreateEnvOptions = {}): Env {
       all: () => windowMonitorLinks,
     },
     {
-      match: 'insert into check_results',
+      match: 'insert into check_results_v2',
+      run: (args, normalizedSql) => {
+        onRun?.(normalizedSql, args);
+        return { meta: { changes: 1 } };
+      },
+    },
+    {
+      match: 'insert into public_snapshot_fragments',
+      run: (args, normalizedSql) => {
+        onRun?.(normalizedSql, args);
+        return { meta: { changes: 1 } };
+      },
+    },
+    {
+      match: (sql) =>
+        sql.includes('insert into check_results') && !sql.includes('insert into check_results_v2'),
       run: (args, normalizedSql) => {
         onRun?.(normalizedSql, args);
         return { meta: { changes: 1 } };
@@ -260,6 +275,7 @@ describe('scheduler/scheduled regression', () => {
 
     expect(result).toEqual({
       runtimeUpdates: [],
+      checkResults: [],
       stats: {
         processedCount: 0,
         rejectedCount: 0,
@@ -492,7 +508,7 @@ describe('scheduler/scheduled regression', () => {
     await expect((selfFetch.mock.calls[0]?.[0] as Request).json()).resolves.toEqual({
       step: 'seed',
       kind: 'homepage',
-      part: 'envelope',
+      part: 'all',
       monitor_offset: 0,
       monitor_limit: 2,
     });
@@ -527,7 +543,15 @@ describe('scheduler/scheduled regression', () => {
       consecutive_failures: 0,
       consecutive_successes: 1,
     }));
-    const env = createEnv({ dueRows }) as unknown as Env;
+    const runSql: string[] = [];
+    const runArgs: unknown[][] = [];
+    const env = createEnv({
+      dueRows,
+      onRun: (sql, args) => {
+        runSql.push(sql);
+        runArgs.push(args);
+      },
+    }) as unknown as Env;
     env.ADMIN_TOKEN = 'test-admin-token';
     env.UPTIMER_PUBLIC_MONITOR_UPDATE_FRAGMENT_WRITES = '1';
     env.UPTIMER_SCHEDULED_RUNTIME_FRAGMENT_REFRESH = '1';
@@ -595,7 +619,7 @@ describe('scheduler/scheduled regression', () => {
     logSpy.mockRestore();
   });
 
-  it('can split runtime update fragment writes out of check-batch children', async () => {
+  it('can split runtime update fragment writes out of check-batch children without an extra service request', async () => {
     const checkedAt = Math.floor(Math.floor(Date.now() / 1000) / 60) * 60;
     const dueRows = Array.from({ length: 7 }, (_, index) => ({
       id: index + 1,
@@ -620,16 +644,33 @@ describe('scheduler/scheduled regression', () => {
       consecutive_failures: 0,
       consecutive_successes: 1,
     }));
-    const env = createEnv({ dueRows }) as unknown as Env;
+    const runSql: string[] = [];
+    const runArgs: unknown[][] = [];
+    const env = createEnv({
+      dueRows,
+      onRun: (sql, args) => {
+        runSql.push(sql);
+        runArgs.push(args);
+      },
+    }) as unknown as Env;
     env.ADMIN_TOKEN = 'test-admin-token';
     env.UPTIMER_PUBLIC_MONITOR_UPDATE_FRAGMENT_WRITES = '1';
     env.UPTIMER_SCHEDULED_RUNTIME_FRAGMENT_REFRESH = '1';
     env.UPTIMER_INTERNAL_CHECK_BATCH_FRAGMENT_WRITE_SPLIT = '1';
-    const writerBodies: unknown[] = [];
+    vi.mocked(refreshPublicMonitorRuntimeSnapshot).mockImplementationOnce(async ({ rebuild }) => {
+      await rebuild();
+      return {
+        version: 1,
+        generated_at: Math.floor(Date.now() / 1000),
+        day_start_at: Math.floor(Math.floor(Date.now() / 1000) / 86_400) * 86_400,
+        monitors: [],
+      };
+    });
     const selfFetch = vi.fn(async (request: Request) => {
       const path = new URL(request.url).pathname;
       if (path === '/api/v1/internal/scheduled/check-batch') {
         expect(request.headers.get('X-Uptimer-Runtime-Fragments-Only')).toBeNull();
+        expect(request.headers.get('X-Uptimer-Skip-Runtime-Fragment-Writes')).toBe('1');
         const body = (await request.json()) as { ids: number[]; checked_at: number };
         return new Response(
           JSON.stringify({
@@ -657,13 +698,6 @@ describe('scheduler/scheduled regression', () => {
           { status: 200, headers: { 'Content-Type': 'application/json; charset=utf-8' } },
         );
       }
-      if (path === '/api/v1/internal/write/runtime-update-fragments') {
-        writerBodies.push(await request.json());
-        return new Response(JSON.stringify({ ok: true, written: true, write_count: 1 }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json; charset=utf-8' },
-        });
-      }
       if (path === '/api/v1/internal/refresh/runtime-fragments') {
         return new Response(
           JSON.stringify({ ok: true, refreshed: true, update_count: 7 }),
@@ -686,11 +720,22 @@ describe('scheduler/scheduled regression', () => {
 
     const requests = selfFetch.mock.calls.map((call) => call[0] as Request);
     expect(requests.filter((request) => new URL(request.url).pathname === '/api/v1/internal/scheduled/check-batch')).toHaveLength(2);
-    expect(requests.filter((request) => new URL(request.url).pathname === '/api/v1/internal/write/runtime-update-fragments')).toHaveLength(1);
-    expect(writerBodies).toEqual([
-      { runtime_updates: [[1, 60, 1_760_000_001, checkedAt, 'up', 'up', 21], [2, 60, 1_760_000_002, checkedAt, 'up', 'up', 21], [3, 60, 1_760_000_003, checkedAt, 'up', 'up', 21], [4, 60, 1_760_000_004, checkedAt, 'up', 'up', 21], [5, 60, 1_760_000_005, checkedAt, 'up', 'up', 21], [6, 60, 1_760_000_006, checkedAt, 'up', 'up', 21], [7, 60, 1_760_000_007, checkedAt, 'up', 'up', 21]] },
-    ]);
-    expect(refreshPublicMonitorRuntimeSnapshot).not.toHaveBeenCalled();
+    expect(requests.filter((request) => new URL(request.url).pathname === '/api/v1/internal/write/runtime-update-fragments')).toHaveLength(0);
+    expect(requests.filter((request) => new URL(request.url).pathname === '/api/v1/internal/refresh/runtime-fragments')).toHaveLength(0);
+    expect(runArgs.filter((args) => args[0] === 'monitor-runtime:updates')).toHaveLength(1);
+    expect(refreshPublicMonitorRuntimeSnapshot).toHaveBeenCalledWith({
+      db: env.DB,
+      now: Math.floor(Date.now() / 1000),
+      updates: expect.arrayContaining([
+        expect.objectContaining({ monitor_id: 1, checked_at: checkedAt }),
+        expect.objectContaining({ monitor_id: 7, checked_at: checkedAt }),
+      ]),
+      rebuild: expect.any(Function),
+    });
+    expect(rebuildPublicMonitorRuntimeSnapshot).toHaveBeenCalledWith(
+      env.DB,
+      Math.floor(Date.now() / 1000),
+    );
   });
 
   it('uses the equivalent direct homepage refresh core when the direct gate is enabled', async () => {
@@ -918,7 +963,15 @@ describe('scheduler/scheduled regression', () => {
       consecutive_failures: 0,
       consecutive_successes: 1,
     }));
-    const env = createEnv({ dueRows }) as unknown as Env;
+    const runSql: string[] = [];
+    const runArgs: unknown[][] = [];
+    const env = createEnv({
+      dueRows,
+      onRun: (sql, args) => {
+        runSql.push(sql);
+        runArgs.push(args);
+      },
+    }) as unknown as Env;
     env.ADMIN_TOKEN = 'test-admin-token';
     const selfFetch = vi.fn(async (req: Request) => {
       const pathname = new URL(req.url).pathname;
@@ -941,6 +994,14 @@ describe('scheduler/scheduled regression', () => {
               'up',
               'up',
               batchIndex === 0 ? -3.7 : 21,
+            ]),
+            check_results: body.ids.map((id, batchIndex) => [
+              id,
+              'up',
+              batchIndex === 0 ? 0 : 21,
+              200,
+              null,
+              1,
             ]),
             processed_count: body.ids.length,
             rejected_count: 0,
@@ -969,6 +1030,19 @@ describe('scheduler/scheduled regression', () => {
 
     expect(runHttpCheck).not.toHaveBeenCalled();
     expect(selfFetch).toHaveBeenCalledTimes(3);
+    const v2Writes = runSql.filter((sql) => sql.includes('insert into check_results_v2'));
+    expect(v2Writes).toHaveLength(1);
+    const v2WriteIndex = runSql.findIndex((sql) => sql.includes('insert into check_results_v2'));
+    expect(runArgs[v2WriteIndex]?.[0]).toBe(checkedAt);
+    expect(Object.keys(JSON.parse(String(runArgs[v2WriteIndex]?.[1])))).toEqual([
+      '1',
+      '2',
+      '3',
+      '4',
+      '5',
+      '6',
+      '7',
+    ]);
     expect(refreshPublicMonitorRuntimeSnapshot).toHaveBeenCalledWith({
       db: env.DB,
       now: Math.floor(Date.now() / 1000),
@@ -1946,7 +2020,7 @@ describe('scheduler/scheduled regression', () => {
     }
   });
 
-  it('processes due HTTP monitors and writes check/state rows', async () => {
+  it('processes due HTTP monitors and writes one v2 check row plus state rows', async () => {
     const runSql: string[] = [];
     const runArgs: unknown[][] = [];
     const dueRows = [
@@ -1997,18 +2071,18 @@ describe('scheduler/scheduled regression', () => {
       responseForbiddenKeywordMode: null,
     });
 
-    const checkInsertIndex = runSql.findIndex((sql) => sql.includes('insert into check_results'));
-    expect(checkInsertIndex).toBeGreaterThan(-1);
-    expect(runArgs[checkInsertIndex]).toEqual([
-      101,
-      expectedCheckedAt,
-      'up',
-      21,
-      200,
-      null,
-      null,
-      1,
-    ]);
+    expect(runSql.some((sql) => sql.includes('insert into check_results_v2'))).toBe(true);
+    expect(
+      runSql.some(
+        (sql) =>
+          sql.includes('insert into check_results') && !sql.includes('insert into check_results_v2'),
+      ),
+    ).toBe(false);
+    const checkInsertIndex = runSql.findIndex((sql) => sql.includes('insert into check_results_v2'));
+    expect(runArgs[checkInsertIndex]?.[0]).toBe(expectedCheckedAt);
+    expect(JSON.parse(String(runArgs[checkInsertIndex]?.[1]))).toEqual({
+      '101': { s: 'u', l: 21, h: 200, e: null, a: 1 },
+    });
 
     const stateUpsertIndex = runSql.findIndex((sql) => sql.includes('insert into monitor_state'));
     expect(stateUpsertIndex).toBeGreaterThan(-1);
@@ -2355,10 +2429,11 @@ describe('scheduler/scheduled regression', () => {
       timeoutMs: 5000,
     });
 
-    const checkInsertIndex = runSql.findIndex((sql) => sql.includes('insert into check_results'));
+    const checkInsertIndex = runSql.findIndex((sql) => sql.includes('insert into check_results_v2'));
     expect(checkInsertIndex).toBeGreaterThan(-1);
-    expect(runArgs[checkInsertIndex]?.[2]).toBe('down');
-    expect(runArgs[checkInsertIndex]?.[7]).toBe(2);
+    expect(JSON.parse(String(runArgs[checkInsertIndex]?.[1]))).toEqual({
+      '401': { s: 'd', l: 70, h: null, e: 'connection refused', a: 2 },
+    });
   });
 
   it('logs failed due monitor runs and still schedules homepage refresh', async () => {

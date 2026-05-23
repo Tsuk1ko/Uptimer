@@ -6,9 +6,9 @@ minify = true
 [observability]
 enabled = true
 
-  [observability.logs]
-  invocation_logs = true
-  head_sampling_rate = 1
+[observability.logs]
+invocation_logs = true
+head_sampling_rate = 1
 
 [triggers]
 crons = ["* * * * *"]
@@ -25,7 +25,7 @@ ADMIN_RATE_LIMIT_MAX = "60"
 ADMIN_RATE_LIMIT_WINDOW_SEC = "60"
 UPTIMER_SCHEDULED_STATUS_REFRESH = "1"
 UPTIMER_TRUST_SCHEDULED_RUNTIME_UPDATES = "1"
-UPTIMER_INTERNAL_SCHEDULED_BATCH_SIZE = "2"
+UPTIMER_INTERNAL_SCHEDULED_BATCH_SIZE = "5"
 
 # Free Plan CPU profile verified for issue #24 final close.
 # Keep this set in sync; do not enable UPTIMER_PUBLIC_SHARDED_HOMEPAGE_RUNTIME_SEED.

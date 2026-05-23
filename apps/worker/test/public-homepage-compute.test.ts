@@ -35,7 +35,7 @@ describe('computePublicHomepagePayload', () => {
         all: () => [],
       },
       {
-        match: 'select checked_at, latency_ms, status from check_results',
+        match: 'select checked_at, latency_ms, status from check_results_v2_expanded',
         all: () => [
           { checked_at: now - 60, latency_ms: 42, status: 'up' },
           { checked_at: now - 120, latency_ms: null, status: 'down' },
@@ -162,7 +162,7 @@ describe('computePublicHomepagePayload', () => {
         all: () => [],
       },
       {
-        match: 'select checked_at, latency_ms, status from check_results',
+        match: 'select checked_at, latency_ms, status from check_results_v2_expanded',
         all: () => [{ checked_at: now - 120, latency_ms: 42, status: 'up' }],
       },
       {
@@ -186,7 +186,7 @@ describe('computePublicHomepagePayload', () => {
         all: () => [],
       },
       {
-        match: 'select monitor_id, checked_at, status from check_results',
+        match: 'select monitor_id, checked_at, status from check_results_v2_expanded',
         all: () => [{ monitor_id: 1, checked_at: now - 120, status: 'up' }],
       },
     ];

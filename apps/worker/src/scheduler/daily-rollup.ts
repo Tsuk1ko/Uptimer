@@ -132,7 +132,7 @@ async function listCheckRowsForMonitorBatch(
     .prepare(
       `
         SELECT monitor_id, checked_at, status, latency_ms
-        FROM check_results
+        FROM check_results_v2_expanded
         WHERE monitor_id IN (${placeholders})
           AND checked_at >= ?${monitorIds.length + 1}
           AND checked_at < ?${monitorIds.length + 2}

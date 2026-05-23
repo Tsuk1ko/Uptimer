@@ -30,6 +30,8 @@ export const MONITOR_RUNTIME_UPDATE_FRAGMENTS_KEY = 'monitor-runtime:updates';
 export const PUBLIC_SNAPSHOT_ENVELOPE_FRAGMENT_KEY = 'envelope';
 
 const MONITOR_FRAGMENT_PREFIX = 'monitor:';
+const BATCH_FRAGMENT_PREFIX = 'batch:';
+const RUNTIME_UPDATE_BATCH_SIZE = 100;
 
 function assertMonitorId(monitorId: number): void {
   if (!Number.isInteger(monitorId) || monitorId <= 0) {
@@ -63,6 +65,37 @@ export function parsePublicMonitorFragmentKey(fragmentKey: string): number | nul
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
+function hash32Base36(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+export function toPublicBatchFragmentKey(generatedAt: number, hashInput: string): string {
+  if (!Number.isInteger(generatedAt) || generatedAt < 0) {
+    throw new Error('public batch fragment generated_at must be a non-negative integer');
+  }
+  return `${BATCH_FRAGMENT_PREFIX}${generatedAt}:${hash32Base36(hashInput)}`;
+}
+
+function isPublicBatchFragmentKey(fragmentKey: string): boolean {
+  return fragmentKey.startsWith(BATCH_FRAGMENT_PREFIX);
+}
+
+function toBatchHashInput(
+  scope: string,
+  generatedAt: number,
+  monitorTimes: readonly { id: number; at: number }[],
+): string {
+  const parts = monitorTimes
+    .map(({ id, at }) => `${id}:${at}`)
+    .sort((a, b) => a.localeCompare(b));
+  return `${scope}|${generatedAt}|${parts.join(',')}`;
+}
+
 function shouldWriteMonitorFragment(
   selectedMonitorIds: ReadonlySet<number> | null,
   monitorId: number,
@@ -86,30 +119,50 @@ function buildMonitorFragmentWrite(opts: {
   };
 }
 
+function buildBatchMonitorFragmentWrite<T extends { id: number }>(opts: {
+  snapshotKey: string;
+  scope: string;
+  generatedAt: number;
+  monitors: readonly T[];
+  updatedAt: number;
+}): PublicSnapshotFragmentWrite[] {
+  if (opts.monitors.length === 0) {
+    return [];
+  }
+  const monitorTimes = opts.monitors.map((monitor) => {
+    assertMonitorId(monitor.id);
+    return { id: monitor.id, at: opts.generatedAt };
+  });
+  return [
+    buildMonitorFragmentWrite({
+      snapshotKey: opts.snapshotKey,
+      fragmentKey: toPublicBatchFragmentKey(
+        opts.generatedAt,
+        toBatchHashInput(opts.scope, opts.generatedAt, monitorTimes),
+      ),
+      generatedAt: opts.generatedAt,
+      bodyJson: JSON.stringify(opts.monitors),
+      updatedAt: opts.updatedAt,
+    }),
+  ];
+}
+
 export function buildStatusMonitorFragmentWrites(
   payload: PublicStatusResponse,
   updatedAt: number,
   monitorIds?: Iterable<number>,
 ): PublicSnapshotFragmentWrite[] {
   const selectedMonitorIds = toSelectedMonitorIdSet(monitorIds);
-  const writes: PublicSnapshotFragmentWrite[] = [];
-
-  for (const monitor of payload.monitors) {
-    if (!shouldWriteMonitorFragment(selectedMonitorIds, monitor.id)) {
-      continue;
-    }
-    writes.push(
-      buildMonitorFragmentWrite({
-        snapshotKey: STATUS_MONITOR_FRAGMENTS_KEY,
-        fragmentKey: toPublicMonitorFragmentKey(monitor.id),
-        generatedAt: payload.generated_at,
-        bodyJson: JSON.stringify(monitor),
-        updatedAt,
-      }),
-    );
-  }
-
-  return writes;
+  const monitors = payload.monitors.filter((monitor) =>
+    shouldWriteMonitorFragment(selectedMonitorIds, monitor.id),
+  );
+  return buildBatchMonitorFragmentWrite({
+    snapshotKey: STATUS_MONITOR_FRAGMENTS_KEY,
+    scope: STATUS_MONITOR_FRAGMENTS_KEY,
+    generatedAt: payload.generated_at,
+    monitors,
+    updatedAt,
+  });
 }
 
 export function buildHomepageMonitorFragmentWrites(
@@ -118,24 +171,16 @@ export function buildHomepageMonitorFragmentWrites(
   monitorIds?: Iterable<number>,
 ): PublicSnapshotFragmentWrite[] {
   const selectedMonitorIds = toSelectedMonitorIdSet(monitorIds);
-  const writes: PublicSnapshotFragmentWrite[] = [];
-
-  for (const monitor of payload.monitors) {
-    if (!shouldWriteMonitorFragment(selectedMonitorIds, monitor.id)) {
-      continue;
-    }
-    writes.push(
-      buildMonitorFragmentWrite({
-        snapshotKey: HOMEPAGE_MONITOR_FRAGMENTS_KEY,
-        fragmentKey: toPublicMonitorFragmentKey(monitor.id),
-        generatedAt: payload.generated_at,
-        bodyJson: JSON.stringify(monitor),
-        updatedAt,
-      }),
-    );
-  }
-
-  return writes;
+  const monitors = payload.monitors.filter((monitor) =>
+    shouldWriteMonitorFragment(selectedMonitorIds, monitor.id),
+  );
+  return buildBatchMonitorFragmentWrite({
+    snapshotKey: HOMEPAGE_MONITOR_FRAGMENTS_KEY,
+    scope: HOMEPAGE_MONITOR_FRAGMENTS_KEY,
+    generatedAt: payload.generated_at,
+    monitors,
+    updatedAt,
+  });
 }
 
 const positiveMonitorIdArraySchema = z.array(z.number().int().positive());
@@ -223,15 +268,32 @@ export function buildMonitorRuntimeUpdateFragmentWrites(
     }
   }
 
-  return [...latestUpdateByMonitorId.values()].map((update) =>
-    buildMonitorFragmentWrite({
-      snapshotKey: MONITOR_RUNTIME_UPDATE_FRAGMENTS_KEY,
-      fragmentKey: toPublicMonitorFragmentKey(update.monitor_id),
-      generatedAt: update.checked_at,
-      bodyJson: JSON.stringify(toCompactRuntimeUpdate(update)),
-      updatedAt,
-    }),
+  const latestUpdates = [...latestUpdateByMonitorId.values()].sort(
+    (a, b) => a.monitor_id - b.monitor_id,
   );
+  const writes: PublicSnapshotFragmentWrite[] = [];
+  for (let index = 0; index < latestUpdates.length; index += RUNTIME_UPDATE_BATCH_SIZE) {
+    const batch = latestUpdates.slice(index, index + RUNTIME_UPDATE_BATCH_SIZE);
+    const generatedAt = Math.max(...batch.map((update) => update.checked_at));
+    writes.push(
+      buildMonitorFragmentWrite({
+        snapshotKey: MONITOR_RUNTIME_UPDATE_FRAGMENTS_KEY,
+        fragmentKey: toPublicBatchFragmentKey(
+          generatedAt,
+          toBatchHashInput(
+            MONITOR_RUNTIME_UPDATE_FRAGMENTS_KEY,
+            generatedAt,
+            batch.map((update) => ({ id: update.monitor_id, at: update.checked_at })),
+          ),
+        ),
+        generatedAt,
+        bodyJson: JSON.stringify(batch.map(toCompactRuntimeUpdate)),
+        updatedAt,
+      }),
+    );
+  }
+
+  return writes;
 }
 
 export type MonitorRuntimeUpdateFragmentReadOptions = {
@@ -274,12 +336,6 @@ export function parseMonitorRuntimeUpdateFragmentRows(
       continue;
     }
 
-    const monitorId = parsePublicMonitorFragmentKey(row.fragment_key);
-    if (monitorId === null) {
-      invalidCount += 1;
-      continue;
-    }
-
     let raw: unknown;
     try {
       raw = JSON.parse(row.body_json) as unknown;
@@ -288,19 +344,48 @@ export function parseMonitorRuntimeUpdateFragmentRows(
       continue;
     }
 
-    const update = parseMonitorRuntimeUpdate(raw);
-    if (
-      !update ||
-      update.monitor_id !== monitorId ||
-      update.checked_at !== row.generated_at
-    ) {
+    const updates: MonitorRuntimeUpdate[] = [];
+    const monitorId = parsePublicMonitorFragmentKey(row.fragment_key);
+    if (monitorId !== null) {
+      const update = parseMonitorRuntimeUpdate(raw);
+      if (
+        !update ||
+        update.monitor_id !== monitorId ||
+        update.checked_at !== row.generated_at
+      ) {
+        invalidCount += 1;
+        continue;
+      }
+      updates.push(update);
+    } else if (isPublicBatchFragmentKey(row.fragment_key) && Array.isArray(raw)) {
+      if (raw.length === 0) {
+        invalidCount += 1;
+        continue;
+      }
+      for (const item of raw) {
+        const update = parseMonitorRuntimeUpdate(item);
+        if (!update) {
+          updates.length = 0;
+          break;
+        }
+        updates.push(update);
+      }
+      const maxCheckedAt =
+        updates.length > 0 ? Math.max(...updates.map((update) => update.checked_at)) : null;
+      if (maxCheckedAt !== row.generated_at) {
+        invalidCount += 1;
+        continue;
+      }
+    } else {
       invalidCount += 1;
       continue;
     }
 
-    const previous = latestUpdateByMonitorId.get(update.monitor_id);
-    if (!previous || update.checked_at >= previous.checked_at) {
-      latestUpdateByMonitorId.set(update.monitor_id, update);
+    for (const update of updates) {
+      const previous = latestUpdateByMonitorId.get(update.monitor_id);
+      if (!previous || update.checked_at >= previous.checked_at) {
+        latestUpdateByMonitorId.set(update.monitor_id, update);
+      }
     }
   }
 
@@ -399,27 +484,49 @@ function parseMonitorFragmentRows<T extends { id: number }>(
       continue;
     }
 
-    const monitorId = parsePublicMonitorFragmentKey(row.fragment_key);
-    if (monitorId === null) {
-      invalidCount += 1;
-      continue;
-    }
-
     const raw = parseFragmentJson(row);
     if (raw === null) {
       invalidCount += 1;
       continue;
     }
-    const parsed = schema.safeParse(raw);
-    if (!parsed.success || parsed.data.id !== monitorId) {
+
+    const monitors: T[] = [];
+    const monitorId = parsePublicMonitorFragmentKey(row.fragment_key);
+    if (monitorId !== null) {
+      const parsed = schema.safeParse(raw);
+      if (!parsed.success || parsed.data.id !== monitorId) {
+        invalidCount += 1;
+        continue;
+      }
+      monitors.push(parsed.data);
+    } else if (isPublicBatchFragmentKey(row.fragment_key) && Array.isArray(raw)) {
+      if (raw.length === 0) {
+        invalidCount += 1;
+        continue;
+      }
+      for (const item of raw) {
+        const parsed = schema.safeParse(item);
+        if (!parsed.success) {
+          monitors.length = 0;
+          break;
+        }
+        monitors.push(parsed.data);
+      }
+      if (monitors.length === 0) {
+        invalidCount += 1;
+        continue;
+      }
+    } else {
       invalidCount += 1;
       continue;
     }
 
-    const previousGeneratedAt = generatedAtByMonitorId.get(monitorId);
-    if (previousGeneratedAt === undefined || row.generated_at >= previousGeneratedAt) {
-      latestByMonitorId.set(monitorId, parsed.data);
-      generatedAtByMonitorId.set(monitorId, row.generated_at);
+    for (const monitor of monitors) {
+      const previousGeneratedAt = generatedAtByMonitorId.get(monitor.id);
+      if (previousGeneratedAt === undefined || row.generated_at >= previousGeneratedAt) {
+        latestByMonitorId.set(monitor.id, monitor);
+        generatedAtByMonitorId.set(monitor.id, row.generated_at);
+      }
     }
   }
 
@@ -514,6 +621,10 @@ function looksLikeJsonObjectText(value: string): boolean {
   return trimmed.startsWith('{') && trimmed.endsWith('}');
 }
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function parseRawMonitorJsonFragmentRows(
   rows: readonly PublicSnapshotFragmentRow[],
   expectedGeneratedAt: number,
@@ -524,20 +635,58 @@ function parseRawMonitorJsonFragmentRows(
 
   for (const row of rows) {
     const monitorId = parsePublicMonitorFragmentKey(row.fragment_key);
-    if (monitorId === null) {
-      invalidCount += 1;
-      continue;
-    }
     if (row.generated_at !== expectedGeneratedAt) {
       staleCount += 1;
       continue;
     }
-    const bodyJson = row.body_json.trim();
-    if (!looksLikeJsonObjectText(bodyJson)) {
+
+    if (monitorId !== null) {
+      const bodyJson = row.body_json.trim();
+      if (!looksLikeJsonObjectText(bodyJson)) {
+        invalidCount += 1;
+        continue;
+      }
+      bodyJsonByMonitorId.set(monitorId, bodyJson);
+      continue;
+    }
+
+    if (!isPublicBatchFragmentKey(row.fragment_key)) {
       invalidCount += 1;
       continue;
     }
-    bodyJsonByMonitorId.set(monitorId, bodyJson);
+
+    let raw: unknown;
+    try {
+      raw = JSON.parse(row.body_json) as unknown;
+    } catch {
+      invalidCount += 1;
+      continue;
+    }
+    if (!Array.isArray(raw) || raw.length === 0) {
+      invalidCount += 1;
+      continue;
+    }
+
+    const batchBodyJsonByMonitorId = new Map<number, string>();
+    for (const item of raw) {
+      if (!isJsonObject(item) || typeof item.id !== 'number') {
+        batchBodyJsonByMonitorId.clear();
+        break;
+      }
+      const id = item.id;
+      if (!Number.isInteger(id) || id <= 0) {
+        batchBodyJsonByMonitorId.clear();
+        break;
+      }
+      batchBodyJsonByMonitorId.set(id, JSON.stringify(item));
+    }
+    if (batchBodyJsonByMonitorId.size === 0) {
+      invalidCount += 1;
+      continue;
+    }
+    for (const [id, bodyJson] of batchBodyJsonByMonitorId.entries()) {
+      bodyJsonByMonitorId.set(id, bodyJson);
+    }
   }
 
   return { bodyJsonByMonitorId, invalidCount, staleCount };

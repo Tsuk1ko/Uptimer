@@ -596,15 +596,15 @@ describe('internal sharded public snapshot continuation route', () => {
       refreshed: false,
       continued: true,
       next_steps: [
-        { step: 'seed', kind: 'homepage', part: 'envelope', monitor_offset: 0, monitor_limit: 2 },
-        { step: 'seed', kind: 'status', part: 'envelope', monitor_offset: 0, monitor_limit: 2 },
+        { step: 'seed', kind: 'homepage', part: 'all', monitor_offset: 0, monitor_limit: 2 },
+        { step: 'seed', kind: 'status', part: 'all', monitor_offset: 0, monitor_limit: 2 },
       ],
     });
     expect(waitUntil).toHaveBeenCalledTimes(2);
     await Promise.all(waitUntil.mock.calls.map((call) => call[0] as Promise<unknown>));
     await expect(Promise.all(selfRequests.map((request) => request.json()))).resolves.toEqual([
-      { step: 'seed', kind: 'homepage', part: 'envelope', monitor_offset: 0, monitor_limit: 2 },
-      { step: 'seed', kind: 'status', part: 'envelope', monitor_offset: 0, monitor_limit: 2 },
+      { step: 'seed', kind: 'homepage', part: 'all', monitor_offset: 0, monitor_limit: 2 },
+      { step: 'seed', kind: 'status', part: 'all', monitor_offset: 0, monitor_limit: 2 },
     ]);
   });
 
@@ -815,6 +815,184 @@ describe('internal sharded public snapshot continuation route', () => {
     expect(new URL(selfRequests[0]!.url).pathname).toBe(
       '/api/v1/internal/continue/sharded-public-snapshot',
     );
+    await expect(selfRequests[0]!.json()).resolves.toEqual({
+      step: 'assemble',
+      kind: 'status',
+    });
+  });
+
+  it('accepts an all seed step and queues the next monitor slice after the first batch', async () => {
+    const writes: unknown[][] = [];
+    const generatedAt = Math.floor(Date.now() / 1000);
+    const base = statusPayload();
+    const payload = {
+      ...base,
+      generated_at: generatedAt,
+      summary: { ...base.summary, up: 2 },
+      monitors: [
+        base.monitors[0]!,
+        {
+          ...base.monitors[0]!,
+          id: 2,
+          name: 'DB',
+          sort_order: 2,
+        },
+      ],
+    };
+    const selfRequests: Request[] = [];
+    const waitUntil = vi.fn();
+    const env = {
+      DB: createFakeD1Database([
+        {
+          match: (sql) => sql.includes('from public_snapshots') && !sql.includes('body_json'),
+          first: () => ({ generated_at: payload.generated_at, updated_at: payload.generated_at }),
+        },
+        {
+          match: (sql) => sql.includes('from public_snapshots') && sql.includes('body_json'),
+          first: () => ({
+            generated_at: payload.generated_at,
+            updated_at: payload.generated_at,
+            body_json: JSON.stringify(payload),
+          }),
+        },
+        {
+          match: 'insert into public_snapshot_fragments',
+          run: (args) => {
+            writes.push(args);
+            return 1;
+          },
+        },
+      ]),
+      ADMIN_TOKEN: 'test-admin-token',
+      UPTIMER_SCHEDULED_SHARDED_CONTINUATION: '1',
+      UPTIMER_PUBLIC_SHARDED_FRAGMENT_SEED: '1',
+      UPTIMER_SCHEDULED_SHARDED_FRAGMENT_SEED: '1',
+      SELF: {
+        fetch: vi.fn(async (request: Request) => {
+          selfRequests.push(request);
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }),
+      },
+    } as unknown as Env;
+
+    const res = await worker.fetch(
+      new Request('http://internal/api/v1/internal/continue/sharded-public-snapshot', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer test-admin-token',
+          'Content-Type': 'application/json; charset=utf-8',
+        },
+        body: JSON.stringify({
+          step: 'seed',
+          kind: 'status',
+          part: 'all',
+          monitor_offset: 0,
+          monitor_limit: 1,
+        }),
+      }),
+      env,
+      { waitUntil } as unknown as ExecutionContext,
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      ok: true,
+      step: 'seed',
+      seeded: true,
+      kind: 'status',
+      part: 'all',
+      monitor_count: 2,
+      monitor_offset: 0,
+      monitor_limit: 1,
+      write_count: 2,
+      continued: true,
+      next_step: { step: 'seed', kind: 'status', part: 'monitors', monitor_offset: 1, monitor_limit: 1 },
+    });
+    expect(writes.map((args) => [args[0], args[1]])).toEqual([
+      [STATUS_ENVELOPE_FRAGMENT_KEY, 'envelope'],
+      [STATUS_MONITOR_FRAGMENTS_KEY, expect.stringMatching(/^batch:\d+:[0-9a-z]+$/)],
+    ]);
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    await Promise.all(waitUntil.mock.calls.map((call) => call[0] as Promise<unknown>));
+    await expect(selfRequests[0]!.json()).resolves.toEqual({
+      step: 'seed',
+      kind: 'status',
+      part: 'monitors',
+      monitor_offset: 1,
+      monitor_limit: 1,
+    });
+  });
+
+  it('queues assemble immediately when an all seed step covers every monitor', async () => {
+    const generatedAt = Math.floor(Date.now() / 1000);
+    const payload = { ...statusPayload(), generated_at: generatedAt };
+    const selfRequests: Request[] = [];
+    const waitUntil = vi.fn();
+    const env = {
+      DB: createFakeD1Database([
+        {
+          match: (sql) => sql.includes('from public_snapshots') && !sql.includes('body_json'),
+          first: () => ({ generated_at: payload.generated_at, updated_at: payload.generated_at }),
+        },
+        {
+          match: (sql) => sql.includes('from public_snapshots') && sql.includes('body_json'),
+          first: () => ({
+            generated_at: payload.generated_at,
+            updated_at: payload.generated_at,
+            body_json: JSON.stringify(payload),
+          }),
+        },
+        {
+          match: 'insert into public_snapshot_fragments',
+          run: () => 1,
+        },
+      ]),
+      ADMIN_TOKEN: 'test-admin-token',
+      UPTIMER_SCHEDULED_SHARDED_CONTINUATION: '1',
+      UPTIMER_PUBLIC_SHARDED_FRAGMENT_SEED: '1',
+      UPTIMER_SCHEDULED_SHARDED_FRAGMENT_SEED: '1',
+      SELF: {
+        fetch: vi.fn(async (request: Request) => {
+          selfRequests.push(request);
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }),
+      },
+    } as unknown as Env;
+
+    const res = await worker.fetch(
+      new Request('http://internal/api/v1/internal/continue/sharded-public-snapshot', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer test-admin-token',
+          'Content-Type': 'application/json; charset=utf-8',
+        },
+        body: JSON.stringify({
+          step: 'seed',
+          kind: 'status',
+          part: 'all',
+          monitor_offset: 0,
+          monitor_limit: 5,
+        }),
+      }),
+      env,
+      { waitUntil } as unknown as ExecutionContext,
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      ok: true,
+      step: 'seed',
+      seeded: true,
+      kind: 'status',
+      part: 'all',
+      monitor_count: 1,
+      monitor_offset: 0,
+      monitor_limit: 5,
+      continued: true,
+      next_step: { step: 'assemble', kind: 'status' },
+    });
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    await Promise.all(waitUntil.mock.calls.map((call) => call[0] as Promise<unknown>));
     await expect(selfRequests[0]!.json()).resolves.toEqual({
       step: 'assemble',
       kind: 'status',
@@ -1108,11 +1286,11 @@ describe('internal sharded public snapshot fragment seed route', () => {
       write_count: 2,
     });
     expect(writes.map((args) => [args[0], args[1]])).toEqual([
-      [HOMEPAGE_MONITOR_FRAGMENTS_KEY, 'monitor:1'],
-      [HOMEPAGE_ARTIFACT_MONITOR_FRAGMENTS_KEY, 'monitor:1'],
+      [HOMEPAGE_MONITOR_FRAGMENTS_KEY, expect.stringMatching(/^batch:\d+:[0-9a-z]+$/)],
+      [HOMEPAGE_ARTIFACT_MONITOR_FRAGMENTS_KEY, expect.stringMatching(/^batch:\d+:[0-9a-z]+$/)],
     ]);
-    const artifactBody = JSON.parse(writes[1]![3] as string) as { card_html?: string };
-    expect(artifactBody.card_html).toContain('Availability (30d)');
+    const artifactBody = JSON.parse(writes[1]![3] as string) as Array<{ card_html?: string }>;
+    expect(artifactBody[0]?.card_html).toContain('Availability (30d)');
   });
 
   it('seeds bounded status fragments from the current static snapshot', async () => {
@@ -1178,7 +1356,7 @@ describe('internal sharded public snapshot fragment seed route', () => {
     expect(writes).toHaveLength(2);
     expect(writes.map((args) => [args[0], args[1]])).toEqual([
       [STATUS_ENVELOPE_FRAGMENT_KEY, 'envelope'],
-      [STATUS_MONITOR_FRAGMENTS_KEY, 'monitor:1'],
+      [STATUS_MONITOR_FRAGMENTS_KEY, expect.stringMatching(/^batch:\d+:[0-9a-z]+$/)],
     ]);
   });
 });

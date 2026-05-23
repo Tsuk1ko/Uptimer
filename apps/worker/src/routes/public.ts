@@ -549,7 +549,7 @@ async function buildLatencyResponseJson(opts: {
               ELSE 'unknown'
             END AS status,
             latency_ms
-          FROM check_results
+          FROM check_results_v2_expanded
           WHERE monitor_id = ?1
             AND checked_at >= ?2
             AND checked_at <= ?3
@@ -618,7 +618,7 @@ async function resolveUptimeRangeStartFromDb(opts: {
       .prepare(
         `
           SELECT checked_at
-          FROM check_results
+          FROM check_results_v2_expanded
           WHERE monitor_id = ?1
             AND checked_at >= ?2
             AND checked_at < ?3
@@ -1609,7 +1609,7 @@ async function computePartialUptimeTotals(
     .prepare(
       `
       SELECT checked_at, status
-      FROM check_results
+      FROM check_results_v2_expanded
       WHERE monitor_id = ?1
         AND checked_at >= ?2
         AND checked_at < ?3

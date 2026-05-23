@@ -124,7 +124,7 @@ adminExportsRoutes.get('/monitors/:id/check-results.csv', async (c) => {
   const { results } = await c.env.DB.prepare(
     `
       SELECT checked_at, status, latency_ms, http_status, error, location, attempt
-      FROM check_results
+      FROM check_results_v2_expanded
       WHERE monitor_id = ?1
         AND checked_at >= ?2
         AND checked_at < ?3

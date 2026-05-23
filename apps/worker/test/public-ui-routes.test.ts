@@ -105,7 +105,7 @@ describe('public ui routes', () => {
       {
         match: (sql) =>
           sql.includes('select checked_at') &&
-          sql.includes('from check_results') &&
+          sql.includes('from check_results_v2_expanded') &&
           sql.includes('order by checked_at'),
         first: () => null,
       },
@@ -723,7 +723,7 @@ describe('public ui routes', () => {
       {
         match: (sql) =>
           sql.includes('select checked_at, status') &&
-          sql.includes('from check_results') &&
+          sql.includes('from check_results_v2_expanded') &&
           sql.includes('where monitor_id = ?1'),
         all: () => [],
       },

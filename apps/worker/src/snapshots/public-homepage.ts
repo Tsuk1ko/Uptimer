@@ -13,6 +13,7 @@ import {
   type StoredPublicHomepageRenderArtifact,
 } from '../schemas/public-homepage';
 import type { PublicSnapshotFragmentRow } from './public-fragments';
+import { toPublicBatchFragmentKey } from './public-monitor-fragments';
 
 const SNAPSHOT_KEY = 'homepage';
 const SNAPSHOT_ARTIFACT_KEY = 'homepage:artifact';
@@ -341,33 +342,37 @@ export function buildHomepageArtifactMonitorFragmentWrites(
   updatedAt: number;
 }> {
   const selectedMonitorIds = monitorIds ? new Set(monitorIds) : null;
-  const writes: Array<{
-    snapshotKey: string;
-    fragmentKey: string;
-    generatedAt: number;
-    bodyJson: string;
-    updatedAt: number;
-  }> = [];
+  const fragments: HomepageArtifactMonitorFragment[] = [];
 
   for (const monitor of payload.monitors) {
     if (selectedMonitorIds && !selectedMonitorIds.has(monitor.id)) {
       continue;
     }
-    writes.push({
-      snapshotKey: HOMEPAGE_ARTIFACT_MONITOR_FRAGMENTS_KEY,
-      fragmentKey: `monitor:${monitor.id}`,
-      generatedAt: payload.generated_at,
-      bodyJson: JSON.stringify({
+    fragments.push({
         id: monitor.id,
         name: monitor.name,
         group_name: monitor.group_name,
         card_html: renderHomepageMonitorPreloadCardFragment(monitor),
-      }),
-      updatedAt,
     });
   }
 
-  return writes;
+  if (fragments.length === 0) {
+    return [];
+  }
+
+  const hashInput = `${HOMEPAGE_ARTIFACT_MONITOR_FRAGMENTS_KEY}|${payload.generated_at}|${fragments
+    .map((fragment) => `${fragment.id}:${payload.generated_at}`)
+    .sort((a, b) => a.localeCompare(b))
+    .join(',')}`;
+  return [
+    {
+      snapshotKey: HOMEPAGE_ARTIFACT_MONITOR_FRAGMENTS_KEY,
+      fragmentKey: toPublicBatchFragmentKey(payload.generated_at, hashInput),
+      generatedAt: payload.generated_at,
+      bodyJson: JSON.stringify(fragments),
+      updatedAt,
+    },
+  ];
 }
 
 function parseHomepageArtifactMonitorFragmentKey(fragmentKey: string): number | null {
@@ -376,6 +381,10 @@ function parseHomepageArtifactMonitorFragmentKey(fragmentKey: string): number | 
   }
   const parsed = Number.parseInt(fragmentKey.slice('monitor:'.length), 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function isHomepageArtifactBatchFragmentKey(fragmentKey: string): boolean {
+  return fragmentKey.startsWith('batch:');
 }
 
 export function parseHomepageArtifactMonitorFragmentRows(
@@ -390,10 +399,6 @@ export function parseHomepageArtifactMonitorFragmentRows(
 
   for (const row of rows) {
     const monitorId = parseHomepageArtifactMonitorFragmentKey(row.fragment_key);
-    if (monitorId === null || !expectedMonitorIds.has(monitorId)) {
-      invalidCount += 1;
-      continue;
-    }
     if (row.generated_at !== snapshot.generated_at) {
       staleCount += 1;
       continue;
@@ -406,13 +411,45 @@ export function parseHomepageArtifactMonitorFragmentRows(
       invalidCount += 1;
       continue;
     }
-    const parsed = homepageArtifactMonitorFragmentSchema.safeParse(raw);
-    if (!parsed.success || parsed.data.id !== monitorId) {
+
+    const fragments: HomepageArtifactMonitorFragment[] = [];
+    if (monitorId !== null) {
+      if (!expectedMonitorIds.has(monitorId)) {
+        invalidCount += 1;
+        continue;
+      }
+      const parsed = homepageArtifactMonitorFragmentSchema.safeParse(raw);
+      if (!parsed.success || parsed.data.id !== monitorId) {
+        invalidCount += 1;
+        continue;
+      }
+      fragments.push(parsed.data);
+    } else if (isHomepageArtifactBatchFragmentKey(row.fragment_key) && Array.isArray(raw)) {
+      if (raw.length === 0) {
+        invalidCount += 1;
+        continue;
+      }
+      for (const item of raw) {
+        const parsed = homepageArtifactMonitorFragmentSchema.safeParse(item);
+        if (!parsed.success || !expectedMonitorIds.has(parsed.data.id)) {
+          fragments.length = 0;
+          break;
+        }
+        fragments.push(parsed.data);
+      }
+      if (fragments.length === 0) {
+        invalidCount += 1;
+        continue;
+      }
+    } else {
       invalidCount += 1;
       continue;
     }
-    cardHtmlByMonitorId.set(monitorId, parsed.data.card_html);
-    monitorNameById.set(monitorId, parsed.data.name);
+
+    for (const fragment of fragments) {
+      cardHtmlByMonitorId.set(fragment.id, fragment.card_html);
+      monitorNameById.set(fragment.id, fragment.name);
+    }
   }
 
   let missingCount = 0;

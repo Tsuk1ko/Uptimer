@@ -83,7 +83,7 @@ describe('public routes uptime regression', () => {
         }),
       },
       {
-        match: 'from check_results',
+        match: 'from check_results_v2_expanded',
         all: () => [
           { checked_at: rangeStart - 60, status: 'up' },
           { checked_at: firstInRangeCheckAt, status: 'up' },
@@ -137,7 +137,7 @@ describe('public routes uptime regression', () => {
         all: () => [],
       },
       {
-        match: 'from check_results',
+        match: 'from check_results_v2_expanded',
         all: () => [
           { checked_at: dayStart - 60, status: 'up' },
           { checked_at: firstInRangeCheckAt, status: 'up' },
@@ -191,7 +191,7 @@ describe('public routes uptime regression', () => {
         }),
       },
       {
-        match: 'from check_results',
+        match: 'from check_results_v2_expanded',
         all: () => [
           { checked_at: rangeStart - 60, status: 'up' },
           { checked_at: rangeEnd - 60, status: 'up' },

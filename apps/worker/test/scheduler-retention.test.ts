@@ -46,7 +46,7 @@ describe('scheduler/retention', () => {
     const runCalls: unknown[][] = [];
     const env = createEnv([
       {
-        match: 'delete from check_results',
+        match: 'delete from check_results_v2',
         run: (args) => {
           runCalls.push(args);
           return { meta: { changes: 0 } };
@@ -65,7 +65,7 @@ describe('scheduler/retention', () => {
     const runCalls: unknown[][] = [];
     const env = createEnv([
       {
-        match: 'delete from check_results',
+        match: 'delete from check_results_v2',
         run: (args) => {
           runCalls.push(args);
           return { meta: { changes: deletes.shift() ?? 0 } };
@@ -78,7 +78,7 @@ describe('scheduler/retention', () => {
 
     expect(acquireLease).toHaveBeenCalledWith(
       env.DB,
-      'retention:check_results',
+      'retention:check_results_v2',
       Math.floor(scheduledTime / 1000),
       600,
     );
@@ -105,7 +105,7 @@ describe('scheduler/retention', () => {
     const runCalls: unknown[][] = [];
     const env = createEnv([
       {
-        match: 'delete from check_results',
+        match: 'delete from check_results_v2',
         run: (args) => {
           runCalls.push(args);
           return { meta: { changes: 0 } };

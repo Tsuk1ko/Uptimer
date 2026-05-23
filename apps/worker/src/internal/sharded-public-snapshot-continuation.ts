@@ -17,7 +17,7 @@ export type ShardedPublicSnapshotContinuationStep =
   | {
       step: 'seed';
       kind: ShardedPublicSnapshotKind;
-      part: Exclude<ShardedPublicSnapshotSeedPart, 'all'>;
+      part: ShardedPublicSnapshotSeedPart;
       monitorOffset?: number;
       monitorLimit?: number;
     }
@@ -36,7 +36,7 @@ export type ShardedPublicSnapshotContinuationResult = {
   published?: boolean;
   artifactPublished?: boolean;
   kind?: ShardedPublicSnapshotKind;
-  part?: Exclude<ShardedPublicSnapshotSeedPart, 'all'>;
+  part?: ShardedPublicSnapshotSeedPart;
   generatedAt?: number;
   monitorCount?: number;
   monitorOffset?: number;
@@ -168,7 +168,7 @@ function logContinuationDiagnostics(
 
 function nextSeedStep(opts: {
   kind: ShardedPublicSnapshotKind;
-  part: Exclude<ShardedPublicSnapshotSeedPart, 'all'>;
+  part: ShardedPublicSnapshotSeedPart;
   monitorOffset: number;
   monitorLimit: number;
   monitorCount: number;
@@ -185,7 +185,8 @@ function nextSeedStep(opts: {
       : { step: 'assemble', kind: opts.kind };
   }
 
-  const nextOffset = opts.monitorOffset + opts.monitorLimit;
+  const nextOffset =
+    opts.part === 'all' ? opts.monitorLimit : opts.monitorOffset + opts.monitorLimit;
   if (nextOffset < opts.monitorCount) {
     return {
       step: 'seed',
@@ -204,14 +205,14 @@ function firstSeedSteps(monitorLimit: number): ShardedPublicSnapshotContinuation
     {
       step: 'seed',
       kind: 'homepage',
-      part: 'envelope',
+      part: 'all',
       monitorOffset: 0,
       monitorLimit,
     },
     {
       step: 'seed',
       kind: 'status',
-      part: 'envelope',
+      part: 'all',
       monitorOffset: 0,
       monitorLimit,
     },

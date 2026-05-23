@@ -519,7 +519,7 @@ async function computePartialUptimeTotalsSql(
         ),
         first_checks AS (
           SELECT monitor_id, MIN(checked_at) AS first_check_at
-          FROM check_results
+          FROM check_results_v2_expanded
           WHERE monitor_id IN (SELECT monitor_id FROM input)
             AND checked_at >= ?1
             AND checked_at < ?2
@@ -571,7 +571,7 @@ async function computePartialUptimeTotalsSql(
               PARTITION BY cr.monitor_id
               ORDER BY cr.checked_at
             ) AS prev_status
-          FROM check_results cr
+          FROM check_results_v2_expanded cr
           JOIN effective e ON e.monitor_id = cr.monitor_id
           WHERE e.start_at IS NOT NULL
             AND cr.checked_at >= max(0, e.start_at - e.interval_sec * 2)
@@ -719,7 +719,7 @@ async function computePartialUptimeTotalsLegacy(
     .prepare(
       `
         SELECT checked_at, status
-        FROM check_results
+        FROM check_results_v2_expanded
         WHERE monitor_id = ?1
           AND checked_at >= ?2
           AND checked_at < ?3
@@ -843,7 +843,7 @@ async function buildCompactLatencyResponseJson(opts: {
               ELSE 'x'
             END AS status_code,
             latency_ms
-          FROM check_results
+          FROM check_results_v2_expanded
           WHERE monitor_id = ?1
             AND checked_at >= ?2
             AND checked_at <= ?3
@@ -1424,7 +1424,7 @@ publicUiRoutes.get('/monitors/:id/uptime', async (c) => {
       c.env.DB,
       `
         SELECT checked_at
-        FROM check_results
+        FROM check_results_v2_expanded
         WHERE monitor_id = ?1
           AND checked_at >= ?2
           AND checked_at < ?3
@@ -1449,7 +1449,7 @@ publicUiRoutes.get('/monitors/:id/uptime', async (c) => {
           ),
           first_checks AS (
             SELECT monitor_id, MIN(checked_at) AS first_check_at
-            FROM check_results
+            FROM check_results_v2_expanded
             WHERE monitor_id IN (SELECT monitor_id FROM input)
               AND checked_at >= ?1
               AND checked_at < ?2
@@ -1501,7 +1501,7 @@ publicUiRoutes.get('/monitors/:id/uptime', async (c) => {
                 PARTITION BY cr.monitor_id
                 ORDER BY cr.checked_at
               ) AS prev_status
-            FROM check_results cr
+            FROM check_results_v2_expanded cr
             JOIN effective e ON e.monitor_id = cr.monitor_id
             WHERE e.start_at IS NOT NULL
               AND cr.checked_at >= max(0, e.start_at - e.interval_sec * 2)
@@ -1620,7 +1620,7 @@ publicUiRoutes.get('/monitors/:id/uptime', async (c) => {
           ),
           first_checks AS (
             SELECT monitor_id, MIN(checked_at) AS first_check_at
-            FROM check_results
+            FROM check_results_v2_expanded
             WHERE monitor_id IN (SELECT monitor_id FROM input)
               AND checked_at >= ?1
               AND checked_at < ?2
@@ -1672,7 +1672,7 @@ publicUiRoutes.get('/monitors/:id/uptime', async (c) => {
                 PARTITION BY cr.monitor_id
                 ORDER BY cr.checked_at
               ) AS prev_status
-            FROM check_results cr
+            FROM check_results_v2_expanded cr
             JOIN effective e ON e.monitor_id = cr.monitor_id
             WHERE e.start_at IS NOT NULL
               AND cr.checked_at >= max(0, e.start_at - e.interval_sec * 2)

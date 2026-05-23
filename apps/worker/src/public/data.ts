@@ -346,20 +346,19 @@ export async function listHeartbeatsByMonitorId(
     SELECT monitor_id, checked_at, status, latency_ms
     FROM (
       SELECT
-        id,
         monitor_id,
         checked_at,
         status,
         latency_ms,
         ROW_NUMBER() OVER (
           PARTITION BY monitor_id
-          ORDER BY checked_at DESC, id DESC
+          ORDER BY checked_at DESC
         ) AS rn
-      FROM check_results
+      FROM check_results_v2_expanded
       WHERE monitor_id IN (${placeholders})
     )
     WHERE rn <= ?1
-    ORDER BY monitor_id, checked_at DESC, id DESC
+    ORDER BY monitor_id, checked_at DESC
   `;
 
   const { results } = await db
@@ -592,7 +591,7 @@ async function computeTodayPartialUptimeBatchSql(
       ),
       first_checks AS (
         SELECT monitor_id, MIN(checked_at) AS first_check_at
-        FROM check_results
+        FROM check_results_v2_expanded
         WHERE monitor_id IN (SELECT monitor_id FROM input)
           AND checked_at >= ?1
           AND checked_at < ?2
@@ -644,7 +643,7 @@ async function computeTodayPartialUptimeBatchSql(
             PARTITION BY cr.monitor_id
             ORDER BY cr.checked_at
           ) AS prev_status
-        FROM check_results cr
+        FROM check_results_v2_expanded cr
         JOIN effective e ON e.monitor_id = cr.monitor_id
         WHERE e.start_at IS NOT NULL
           AND cr.checked_at >= max(0, e.start_at - e.interval_sec * 2)
@@ -884,7 +883,7 @@ async function computeTodayPartialUptimeBatchLegacy(
     .prepare(
       `
       SELECT monitor_id, checked_at, status
-      FROM check_results
+      FROM check_results_v2_expanded
       WHERE monitor_id IN (${checkPlaceholders})
         AND checked_at >= ?${ids.length + 1}
         AND checked_at < ?${ids.length + 2}

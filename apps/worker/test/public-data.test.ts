@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { computeTodayPartialUptimeBatch } from '../src/public/data';
+import { computeTodayPartialUptimeBatch, listHeartbeatsByMonitorId } from '../src/public/data';
 import { createFakeD1Database, type FakeD1QueryHandler } from './helpers/fake-d1';
 
 describe('public/data', () => {
@@ -75,5 +75,36 @@ describe('public/data', () => {
       uptime_sec: 600,
       uptime_pct: 100,
     });
+  });
+
+  it('does not select the legacy check_results id column from the v2 expanded view', async () => {
+    const handlers: FakeD1QueryHandler[] = [
+      {
+        match: 'from check_results_v2_expanded',
+        all: (args, sql) => {
+          expect(args).toEqual([60, 1]);
+          expect(sql).not.toContain('select id, monitor_id');
+          expect(sql).not.toContain(' id, checked_at');
+          return [
+            {
+              monitor_id: 1,
+              checked_at: 1_771_286_400,
+              status: 'up',
+              latency_ms: 42,
+            },
+          ];
+        },
+      },
+    ];
+
+    const result = await listHeartbeatsByMonitorId(createFakeD1Database(handlers), [1], 60);
+
+    expect(result.get(1)).toEqual([
+      {
+        checked_at: 1_771_286_400,
+        status: 'up',
+        latency_ms: 42,
+      },
+    ]);
   });
 });

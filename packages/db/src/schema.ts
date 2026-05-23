@@ -88,6 +88,15 @@ export const checkResults = sqliteTable(
   }),
 );
 
+export const checkResultsV2 = sqliteTable('check_results_v2', {
+  checkedAt: integer('checked_at').primaryKey(),
+  resultsJson: text('results_json').notNull(),
+  schemaVersion: integer('schema_version').notNull().default(1),
+  createdAt: integer('created_at')
+    .notNull()
+    .default(sql`(unixepoch())`),
+});
+
 export const outages = sqliteTable(
   'outages',
   {

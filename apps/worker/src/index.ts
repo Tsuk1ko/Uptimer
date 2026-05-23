@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { encodeCheckResultsV2Compact } from './check-results-v2';
 import type { Env } from './env';
 import type { Trace } from './observability/trace';
 import {
@@ -61,6 +62,10 @@ function wantsCompactInternalFormat(request: Request): boolean {
 
 function wantsRuntimeUpdateFragmentsOnly(request: Request): boolean {
   return normalizeTruthyHeader(request.headers.get('X-Uptimer-Runtime-Fragments-Only'));
+}
+
+function wantsSkipRuntimeUpdateFragmentWrites(request: Request): boolean {
+  return normalizeTruthyHeader(request.headers.get('X-Uptimer-Skip-Runtime-Fragment-Writes'));
 }
 
 function shouldLogInternalCheckBatchDiagnostics(env: Env): boolean {
@@ -227,7 +232,7 @@ const internalShardedPublicSnapshotContinuationBodySchema = z.discriminatedUnion
   z.object({
     step: z.literal('seed'),
     kind: z.enum(['homepage', 'status']),
-    part: z.enum(['envelope', 'monitors']),
+    part: z.enum(['envelope', 'monitors', 'all']),
     monitor_offset: z.number().int().min(0).optional().default(0),
     monitor_limit: z.number().int().min(1).max(10).optional().default(5),
   }),
@@ -984,10 +989,13 @@ async function handleInternalScheduledCheckBatch(
   const monitorUpdateFragmentWritesEnabled = normalizeTruthyHeader(
     env.UPTIMER_PUBLIC_MONITOR_UPDATE_FRAGMENT_WRITES ?? null,
   );
+  const skipRuntimeFragmentWrites = wantsSkipRuntimeUpdateFragmentWrites(request);
   const runtimeFragmentsOnly =
-    monitorUpdateFragmentWritesEnabled && wantsRuntimeUpdateFragmentsOnly(request);
+    monitorUpdateFragmentWritesEnabled &&
+    !skipRuntimeFragmentWrites &&
+    wantsRuntimeUpdateFragmentsOnly(request);
   let fragmentWriteCount = 0;
-  if (monitorUpdateFragmentWritesEnabled) {
+  if (monitorUpdateFragmentWritesEnabled && !skipRuntimeFragmentWrites) {
     const [{ buildMonitorRuntimeUpdateFragmentWrites }, { writePublicSnapshotFragments }] =
       await timeInternalCheckBatchDiagnostic(
         diagnosticsEnabled,
@@ -1034,6 +1042,7 @@ async function handleInternalScheduledCheckBatch(
     runtime_updates: wantsCompactInternalFormat(request)
       ? encodeMonitorRuntimeUpdatesCompact(responseRuntimeUpdates)
       : responseRuntimeUpdates,
+    check_results: encodeCheckResultsV2Compact(result.checkResults ?? []),
     ...(runtimeFragmentsOnly ? { runtime_updates_fragmented: true } : {}),
     processed_count: result.stats.processedCount,
     rejected_count: result.stats.rejectedCount,

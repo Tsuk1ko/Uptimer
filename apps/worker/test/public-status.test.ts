@@ -262,7 +262,7 @@ describe('public/status payload regression', () => {
         all: () => [],
       },
       {
-        match: 'select monitor_id, checked_at, status from check_results',
+        match: 'select monitor_id, checked_at, status from check_results_v2_expanded',
         all: () => [{ monitor_id: 12, checked_at: now - 120, status: 'up' }],
       },
       {
@@ -343,7 +343,7 @@ describe('public/status payload regression', () => {
         all: () => [],
       },
       {
-        match: 'select monitor_id, checked_at, status from check_results',
+        match: 'select monitor_id, checked_at, status from check_results_v2_expanded',
         all: () => [{ monitor_id: 12, checked_at: now - 120, status: 'up' }],
       },
       {
@@ -440,7 +440,7 @@ describe('public/status payload regression', () => {
         all: () => [],
       },
       {
-        match: 'select monitor_id, checked_at, status from check_results',
+        match: 'select monitor_id, checked_at, status from check_results_v2_expanded',
         all: () => [],
       },
       {
@@ -520,7 +520,7 @@ describe('public/status payload regression', () => {
         all: () => [{ monitor_id: 12, started_at: dayStart + 120, ended_at: dayStart + 180 }],
       },
       {
-        match: 'select monitor_id, checked_at, status from check_results',
+        match: 'select monitor_id, checked_at, status from check_results_v2_expanded',
         all: () => [
           { monitor_id: 12, checked_at: dayStart - 60, status: 'up' },
           { monitor_id: 12, checked_at: dayStart + 300, status: 'up' },
@@ -621,7 +621,7 @@ describe('public/status payload regression', () => {
         all: () => [],
       },
       {
-        match: 'select monitor_id, checked_at, status from check_results',
+        match: 'select monitor_id, checked_at, status from check_results_v2_expanded',
         all: () => [{ monitor_id: 12, checked_at: roundedPreCreationCheckAt, status: 'up' }],
       },
       {
@@ -726,7 +726,7 @@ describe('public/status payload regression', () => {
         ],
       },
       {
-        match: 'select monitor_id, checked_at, status from check_results',
+        match: 'select monitor_id, checked_at, status from check_results_v2_expanded',
         all: () => [
           { monitor_id: 12, checked_at: newMonitorCreatedAt + 90, status: 'up' },
           { monitor_id: 12, checked_at: newMonitorCreatedAt + 150, status: 'up' },

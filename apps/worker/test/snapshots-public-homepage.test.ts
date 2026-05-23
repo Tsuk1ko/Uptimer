@@ -141,36 +141,36 @@ describe('snapshots/public-homepage', () => {
     expect(writes).toHaveLength(1);
     expect(writes[0]).toMatchObject({
       snapshotKey: HOMEPAGE_ARTIFACT_MONITOR_FRAGMENTS_KEY,
-      fragmentKey: 'monitor:1',
+      fragmentKey: expect.stringMatching(/^batch:190:[0-9a-z]+$/),
       generatedAt: 190,
       updatedAt: 200,
     });
-    const body = JSON.parse(writes[0].bodyJson) as {
+    const body = JSON.parse(writes[0].bodyJson) as Array<{
       id: number;
       name: string;
       group_name: string | null;
       card_html: string;
-    };
-    expect(body.id).toBe(1);
-    expect(body.name).toBe('<API & edge>');
-    expect(body.group_name).toBe('Core');
-    expect(body.card_html).toContain('&lt;API &amp; edge&gt;');
-    expect(body.card_html).toContain('Availability (30d)');
-    expect(body.card_html).toContain('<path d="M');
-    expect(body.card_html).not.toContain('<rect ');
+    }>;
+    expect(body[0]?.id).toBe(1);
+    expect(body[0]?.name).toBe('<API & edge>');
+    expect(body[0]?.group_name).toBe('Core');
+    expect(body[0]?.card_html).toContain('&lt;API &amp; edge&gt;');
+    expect(body[0]?.card_html).toContain('Availability (30d)');
+    expect(body[0]?.card_html).toContain('<path d="M');
+    expect(body[0]?.card_html).not.toContain('<rect ');
   });
 
   it('builds homepage artifacts from pre-rendered monitor fragments', () => {
     const payload = samplePayload(190);
     const rows = buildHomepageArtifactMonitorFragmentWrites(payload, 200).map((write) => {
-      const body = JSON.parse(write.bodyJson) as { card_html: string };
+      const body = JSON.parse(write.bodyJson) as Array<{ card_html: string }>;
       return {
         fragment_key: write.fragmentKey,
         generated_at: write.generatedAt,
-        body_json: JSON.stringify({
-          ...body,
+        body_json: JSON.stringify(body.map((fragment) => ({
+          ...fragment,
           card_html: '<article class="card">PRE-RENDERED API</article>',
-        }),
+        }))),
         updated_at: write.updatedAt,
       };
     });

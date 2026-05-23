@@ -189,7 +189,7 @@ function createEnvForScenario(scenario: Scenario): {
           : null,
     },
     {
-      match: 'insert into check_results',
+      match: 'insert into check_results_v2',
       run: () => ({ meta: { changes: 1 } }),
     },
     {
